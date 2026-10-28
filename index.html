@@ -142,7 +142,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
       <button id="lvEASY" class="btn sm">EASY</button>
       <button id="lvNORMAL" class="btn sm">NORMAL</button>
       <button id="lvHARD" class="btn sm">HARD</button>
-      <button id="lvMASTER" class="btn sm">MASTER</button>
+      <button id="lvMASTER" class="btn sm">PERFECT</button>
     </div>
     <div class="sec">MULTI</div>
     <input id="nickInput" class="hidden" type="text" maxlength="8" placeholder="PLAYER NAME" autocomplete="off" spellcheck="false">
@@ -320,137 +320,131 @@ function applyMove(b,m,who){
 }
 
 /* =====================================================
-   PART 2 : CPU difficulty
-   EASY  — many mistakes
-   NORMAL— a few mistakes per game
-   HARD  — exactly one mistake per game
-   MASTER— no mistakes
+   PART 2 : CPU (pure, see chooseIter)
    ===================================================== */
 const LEVELS={
-  EASY:  {noise:6.0, defend:true, threat:true, mistakeRate:0.55, mistakesPerGame:99},
-  NORMAL:{noise:2.0, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:4},
-  HARD:  {noise:0.6, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:1,
-          chain:true, chainCap:6,  reachW:150, multiW:90,  lookahead:false,
-          searchDepth:5, budgetMs:2500, search:{mark:4, rot:18, root:24}},
-  MASTER:{noise:0,   defend:true, threat:true, mistakeRate:0,    mistakesPerGame:0,
-          chain:true, chainCap:12, reachW:260, multiW:160, lookahead:true,
-          searchDepth:99, budgetMs:1200, search:{mark:12, rot:18, root:Infinity}}
+  EASY:   {depth:1, noise:2.4,  cap:4, W:{mark:54,rot:18}, budgetMs:0,    mistakesPerGame:0},
+  NORMAL: {depth:2, noise:0.8,  cap:4, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
+  HARD:   {depth:3, noise:0.15, cap:4, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
+  PERFECT:{depth:6, noise:0,    cap:4, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
 };
-/* HARD/MASTER: 人間のリーチ(2つ揃い+空き1)を最優先で潰し、自分のリーチを先に複数作る。
-   回転は改善がある限り何度でも連続して行い、最後に手番を終える(マークは手番終了)。 */
-function evalFull(b,L){
-  let s=heuristic(b)*0.3;
-  const oppR=countThreats(b,1),myR=countThreats(b,2);
-  s-=oppR*L.reachW+Math.max(0,oppR-1)*L.multiW;
-  s+=myR*L.reachW*0.7+Math.max(0,myR-1)*L.multiW;
-  if(!L.lookahead){
-    if(countWins(b,1)>0)s-=2000;
-  }else{
-    // 1手先: 人間が次に作れる最大リーチ数・即勝ちを読んで減点
-    let worst=0;
-    for(const h of genMoves(b)){
-      const hb=applyMove(b,h,1);
-      if(outcome(hb)==='P'){s-=2000;break}
-      const r=countThreats(hb,1);
-      if(r>worst)worst=r;
-    }
-    s-=worst*L.reachW*0.5;
-  }
-  return s;
-}
-function scoreAdv(b,m,L){
-  const nb=applyMove(b,m,2);
-  if(nb.every((v,i)=>v===b[i]))return -Infinity;
-  const o=outcome(nb);
-  if(o==='C')return 1e6;
-  if(o==='P')return -1e6;
-  if(o==='D')return -300;
-  return evalFull(nb,L)+(m.type==='mark'?LINE_COUNT[m.i]*0.25:0);
-}
-let mistakesLeft=99;
-function heuristic(b){
-  const W=[0,1,6,40];let s=0;
-  for(const l of LINES){
-    let c=0,p=0;
-    for(const i of l){if(b[i]===2)c++;else if(b[i]===1)p++}
-    if(p===0&&c>0)s+=W[c];
-    else if(c===0&&p>0)s-=W[p]*1.15;
-  }
-  return s;
-}
+let mistakesLeft=0;
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+/* ===== CPU ENGINE (pure) ===== */
+const COST={mark:2,rot:1};          // マーク=2, 回転=1
+const POOL_START=30;                 // 各陣営の上限コスト
 function countThreats(b,who){
   let n=0;
   for(const l of LINES){
     let mine=0,empty=0,other=0;
-    for(const i of l){
-      if(b[i]===who)mine++;
-      else if(b[i]===0)empty++;
-      else other++;
-    }
+    for(const i of l){ if(b[i]===who)mine++; else if(b[i]===0)empty++; else other++; }
     if(mine===2&&empty===1&&other===0)n++;
   }
   return n;
 }
-function countWins(b,who){
-  const want=who===1?'P':'C';let n=0;
-  for(const m of genMoves(b))if(outcome(applyMove(b,m,who))===want)n++;
-  return n;
+const EVAL={reachW:150,multiW:90,rotCost:40};
+function leafEval(b){
+  const r2=countThreats(b,2),r1=countThreats(b,1);
+  return EVAL.reachW*(r2*0.7-r1)+EVAL.multiW*(Math.max(0,r2-1)*0.7-Math.max(0,r1-1));
 }
-function scoreMove(b,m,L){
-  const nb=applyMove(b,m,2);
-  const o=outcome(nb);
-  if(o==='C')return 10000;
-  if(o==='P')return -10000;
-  if(o==='D')return -5;
-  let s=heuristic(nb);
-  const myThreats0=countThreats(b,2),yourThreats0=countThreats(b,1);
-  const yourThreats=countThreats(nb,1),myThreats=countThreats(nb,2);
-  if(L.defend&&countWins(nb,1)>0)s-=800;
-  if(L.defend&&yourThreats0>0){
-    const broken=yourThreats0-yourThreats;
-    if(broken>0)s+=180*broken;
-    if(yourThreats>0)s-=120*yourThreats;
-  }else if(yourThreats>0)s-=100*yourThreats;
-  if(L.threat){
-    s+=Math.min(countWins(nb,2),3)*8;
-    if(myThreats>myThreats0)s+=90*(myThreats-myThreats0);
-    s+=myThreats*12;
+function winCells(b,who){
+  const out=[];
+  for(const l of LINES){
+    let w=0,e=-1,o=false;
+    for(const i of l){ if(b[i]===who)w++; else if(b[i]===0)e=i; else o=true; }
+    if(w===2&&e>=0&&!o)out.push(e);
   }
-  if(m.type==='mark')s+=LINE_COUNT[m.i]*0.25;
-  else{
-    const same=nb.every((v,i)=>v===b[i]);
-    if(same)s-=20;
-    else{
-      if(yourThreats0>0&&yourThreats<yourThreats0)s+=70;
-      if(myThreats>myThreats0)s+=55;
-      if(yourThreats0===0&&myThreats0===0&&myThreats===0)s-=4;
+  return out;
+}
+/* Q=[_,先手の残コスト,後手の残コスト]。rt=今ターンの回転数, cap=1ターンの回転上限 */
+function kidsOf(b,side,Q,rt,cap,W){
+  const kids=[];
+  if(rt===0&&Q[side]>=COST.mark){
+    const oppW=new Set(winCells(b,3-side)),ownW=new Set(winCells(b,side));
+    const arr=[];
+    for(let i=0;i<NCELL;i++)if(b[i]===0)
+      arr.push({i,pre:ownW.has(i)?1000:oppW.has(i)?900:LINE_COUNT[i]});
+    arr.sort((x,y)=>y.pre-x.pre||x.i-y.i);
+    for(const c of arr.slice(0,W.mark)){const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});}
+  }
+  if(Q[side]>=COST.rot&&rt<cap){
+    // 案1: 回転は相手のリーチ(阻止対象)を減らす場合だけ許可
+    const oppBefore=countThreats(b,3-side);
+    for(let r=0;r<ROTS.length;r++){
+      const nb=rotBoard(b,ROTS[r]);
+      if(nb.every((v,i)=>v===b[i]))continue;
+      if(countThreats(nb,3-side)>=oppBefore)continue;
+      kids.push({t:1,r,nb});
     }
   }
-  return s;
+  return kids;
 }
-function cpuChoose(b,levelName){
-  const L=LEVELS[levelName]||LEVELS.EASY;
-  const moves=genMoves(b,cpuMarkLeft>0,cpuRotLeft>0);
-  if(!moves.length)return null;
-  // score all moves
-  const ranked=moves.map(m=>({m,s:scoreMove(b,m,L)+Math.random()*L.noise}))
-    .sort((a,b)=>b.s-a.s);
-  const best=ranked[0];
-  // forced: take win, or only move
-  if(best.s>=10000||ranked.length===1)return best.m;
-  // decide whether to intentionally miss (never miss a direct win)
-  let doMiss=false;
-  if(levelName==='EASY'&&Math.random()<L.mistakeRate)doMiss=true;
-  else if(mistakesLeft>0&&(levelName==='NORMAL'||levelName==='HARD')){
-    // spend a planned mistake on non-critical turns
-    if(best.s<500&&Math.random()<(levelName==='HARD'?0.35:0.45))doMiss=true;
+const ABORT={};
+const SRCH={dl:Infinity,n:0};
+function sMinimax(b,side,Q,rt,depth,alpha,beta,P){
+  if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT;
+  const o=outcome(b);
+  if(o==='C')return 1e6+depth;
+  if(o==='P')return -1e6-depth;
+  if(o==='D')return 0;
+  if(depth<=0)return leafEval(b);
+  const maxing=side===2;
+  let kids=kidsOf(b,side,Q,rt,P.cap,P.W);
+  const pen=maxing?EVAL.rotCost:-EVAL.rotCost;
+  for(const k of kids)k.v=leafEval(k.nb)-(k.t===1?pen:0);
+  kids.sort((x,y)=>maxing?y.v-x.v:x.v-y.v);
+  let rots=0;kids=kids.filter(k=>k.t===0||(++rots<=P.W.rot));
+  let best=maxing?-Infinity:Infinity;
+  for(const k of kids){
+    let v;
+    if(k.t===0){const Q2=Q.slice();Q2[side]-=COST.mark;v=sMinimax(k.nb,3-side,Q2,0,depth-1,alpha,beta,P);}
+    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,rt+1,depth-1,alpha,beta,P)-pen;}
+    if(maxing){if(v>best)best=v;if(best>alpha)alpha=best;}
+    else{if(v<best)best=v;if(best<beta)beta=best;}
+    if(beta<=alpha)break;
   }
-  if(!doMiss)return best.m;
-  // pick a weaker move (not the absolute worst if possible)
-  mistakesLeft=Math.max(0,mistakesLeft-1);
-  const pool=ranked.slice(1,Math.min(ranked.length,levelName==='EASY'?8:4));
-  if(!pool.length)return best.m;
-  return pool[Math.floor(Math.random()*pool.length)].m;
+  if(rt>0&&beta>alpha){
+    const v=sMinimax(b,3-side,Q,0,depth-1,alpha,beta,P);
+    if(maxing){if(v>best)best=v;}else{if(v<best)best=v;}
+  }
+  if(best===Infinity||best===-Infinity)return leafEval(b);
+  return best;
+}
+function chooseAction(b,me,Q,rt,P,rng){
+  const RW={mark:NCELL,rot:ROTS.length};
+  const opt=[];
+  const pen=me===2?EVAL.rotCost:-EVAL.rotCost;
+  for(const k of kidsOf(b,me,Q,rt,P.cap,RW)){
+    let v;
+    if(k.t===0){const Q2=Q.slice();Q2[me]-=COST.mark;v=sMinimax(k.nb,3-me,Q2,0,P.depth-1,-Infinity,Infinity,P);}
+    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,rt+1,P.depth-1,-Infinity,Infinity,P)-pen;}
+    opt.push({a:k.t===0?{type:'mark',i:k.i}:{type:'rot',r:k.r},v,t:k.t});
+  }
+  if(rt>0){
+    const v=sMinimax(b,3-me,Q,0,P.depth-1,-Infinity,Infinity,P);
+    opt.push({a:{type:'end'},v,t:2});
+  }
+  if(!opt.length)return {type:'end'};
+  const sg=me===2?1:-1;
+  for(const o of opt)o.score=sg*o.v+(P.noise?P.noise*rng():0);
+  opt.sort((x,y)=>y.score-x.score||(x.t-y.t));
+  return opt[0].a;
+}
+function chooseIter(b,me,Q,rt,P,rng){
+  let best=null;
+  SRCH.dl=P.budgetMs?Date.now()+P.budgetMs:Infinity;
+  for(let d=1;d<=P.depth;d++){
+    try{best=chooseAction(b,me,Q,rt,Object.assign({},P,{depth:d}),rng)}
+    catch(e){if(e===ABORT)break;throw e}
+  }
+  return best||{type:'end'};
 }
 
 /* =====================================================
@@ -519,14 +513,17 @@ resize(); // initial layout after state exists
 let mode='MARK';         // MARK | ROTATE (what YOU chose)
 let round=1,anim=null,hl=null,hoverSt=null,level='EASY';
 let playMode='cpu';       // cpu | pvp
-let rotLeft=30;          // player rotate budget per game (max 30)
-const ROT_MAX=30;
-const MARK_MAX=7;
-const SECOND_MARK_BONUS=2; // A1: second player gets extra marks
+const POOL_MAX=30;       // 各陣営の上限コスト(マーク=2, 回転=1)
+const MARK_COST=2, ROT_COST=1;
+let playerPool=POOL_MAX, cpuPool=POOL_MAX;
 let humanFirst=true;     // who opens the game (random each start)
-let markLeft=MARK_MAX;
-let cpuMarkLeft=MARK_MAX+SECOND_MARK_BONUS;
-let cpuRotLeft=ROT_MAX;
+let markLeft=0,rotLeft=0,cpuMarkLeft=0,cpuRotLeft=0; // syncCounts() で導出
+function syncCounts(){
+  markLeft=Math.floor(playerPool/MARK_COST);rotLeft=playerPool;
+  cpuMarkLeft=Math.floor(cpuPool/MARK_COST);cpuRotLeft=cpuPool;
+}
+syncCounts();
+let passCount=0, turnNoAct=false;   // 何もできないターンが2連続したら引き分け
 let rotatedThisTurn=false; // true after at least one rotate this turn
 let turnHist=[];           // undo stack for CURRENT turn only (rotates)
 let hits=[];
@@ -621,22 +618,20 @@ function onNetData(msg){
     const st=stickerMap()[msg.i];
     if(!st||st.owner!==0)return;
     state='busy';
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
+    cpuPool=Math.max(0,cpuPool-MARK_COST);syncCounts();
     st.owner=2;st.mt=performance.now();SND.mark();
     setTimeout(()=>finishMove(2),400);
   }else if(msg.type==='rot'){
     state='busy';
-    cpuRotLeft=Math.max(0,cpuRotLeft-1);
+    cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
     startRot(msg.axis,msg.layer,msg.dir,()=>setTimeout(()=>finishMove(2),120));
   }else if(msg.type==='end'){
-    state='busy';
+    state='busy';turnNoAct=false;
     setTimeout(()=>finishMove(2),200);
   }
 }
 function assignSeatsFromFlags(){
-  if(humanFirst){markLeft=MARK_MAX;cpuMarkLeft=MARK_MAX+SECOND_MARK_BONUS}
-  else{markLeft=MARK_MAX+SECOND_MARK_BONUS;cpuMarkLeft=MARK_MAX}
-  rotLeft=ROT_MAX;cpuRotLeft=ROT_MAX;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;
 }
 function genRoomCode(){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -876,7 +871,7 @@ function cloneCubies(){
 function pushTurnHist(){
   turnHist.push({
     cubies:cloneCubies(),
-    rotLeft,rotatedThisTurn,mode
+    playerPool,rotatedThisTurn,mode
   });
 }
 function clearTurnHist(){turnHist=[];}
@@ -887,7 +882,7 @@ function doUndo(){
   if(!canUndo())return;
   const s=turnHist.pop();
   cubies=s.cubies;
-  rotLeft=s.rotLeft;
+  playerPool=s.playerPool;syncCounts();
   rotatedThisTurn=s.rotatedThisTurn;
   mode=s.mode;
   hl=null;anim=null;hoverSt=null;
@@ -1034,6 +1029,16 @@ function updateAnim(now){
 /* ---------- turn flow ---------- */
 const $=id=>document.getElementById(id);
 let lastWho=2;
+/* 回転は相手のリーチを減らす場合だけ有効 */
+function blocksOpp(r,who){
+  if((who===1?playerPool:cpuPool)<ROT_COST)return false;
+  const b=boardNow();
+  return countThreats(rotBoard(b,r),3-who)<countThreats(b,3-who);
+}
+function rotOK(who){return ROTS.some(r=>blocksOpp(r,who))}
+function playerMarkOK(){return markLeft>0&&!rotatedThisTurn}
+function playerRotOK(){return rotOK(1)}
+function playerHasAction(){return playerMarkOK()||playerRotOK()}
 function setUI(){
   const mine=state==='player';
   const opp=oppTag();
@@ -1047,7 +1052,7 @@ function setUI(){
   if(youWho)youWho.textContent=myTag();
   const can=state==='player';
   const canMark=can&&markLeft>0&&!rotatedThisTurn;
-  const canRot=can&&rotLeft>0;
+  const canRot=can&&playerRotOK();
   // auto-switch mode when current choice is exhausted
   if(can&&mode==='MARK'&&!canMark&&canRot)mode='ROTATE';
   if(can&&mode==='ROTATE'&&!canRot&&canMark)mode='MARK';
@@ -1058,13 +1063,13 @@ function setUI(){
   // END TURN: after rotate, or when no marks left (must rotate/end)
   const endBtn=$('mEnd');
   if(endBtn){
-    const showEnd=can&&(rotatedThisTurn||(markLeft<=0&&rotLeft<=0));
+    const showEnd=can&&(rotatedThisTurn||!playerHasAction());
     endBtn.classList.toggle('hidden',!showEnd);
     endBtn.disabled=!showEnd;
   }
   if(!can){
     $('hint').textContent='';
-  }else if(markLeft<=0&&rotLeft<=0){
+  }else if(!playerHasAction()){
     $('hint').textContent='No moves left. End turn.';
   }else if(mode==='MARK'&&canMark){
     $('hint').textContent=rotatedThisTurn?'Place your mark, or end turn.':'Place your mark.';
@@ -1095,6 +1100,8 @@ function finishMove(who){
   clearTurnHist();
   const b=boardNow(),o=outcome(b);
   if(o){endGame(o,b);return}
+  passCount=turnNoAct?passCount+1:0;turnNoAct=false;
+  if(passCount>=2){endGame('D',b);return}
   if(who===1){
     if(!humanFirst)round++;
     state='cpu';rotatedThisTurn=false;setUI();
@@ -1105,177 +1112,39 @@ function finishMove(who){
     state='player';rotatedThisTurn=false;
     mode=markLeft>0?'MARK':(rotLeft>0?'ROTATE':'MARK');
     setUI();
-    if(markLeft<=0&&rotLeft<=0)setTimeout(()=>endPlayerTurn(true),300);
-  }
-}
-/* HARD/MASTER: 1回の手番で回転を連続使用可能。改善がなくなった時点でターン終了 */
-function cpuActAdv(n,first){
-  const L=LEVELS[level];
-  const b=boardNow();
-  const canM=cpuMarkLeft>0, canR=cpuRotLeft>0&&n<L.chainCap;
-  const ranked=genMoves(b,canM,canR)
-    .map(m=>({m,s:scoreAdv(b,m,L)+Math.random()*L.noise}))
-    .filter(x=>x.s!==-Infinity)
-    .sort((x,y)=>y.s-x.s);
-  if(!ranked.length){setTimeout(()=>finishMove(2),200);return}
-  let pick=ranked[0];
-  // HARD のみ: 人間にリーチがない時だけ1回だけ手を緩める
-  if(first&&level==='HARD'&&mistakesLeft>0&&ranked.length>3&&countThreats(b,1)===0&&pick.s<500&&Math.random()<0.35){
-    mistakesLeft--;pick=ranked[1+Math.floor(Math.random()*2)];
-  }
-  // 最初の一手以外は「ここで終える」方が良ければ終了
-  if(!first&&pick.s<=evalFull(b,L)+0.5){setTimeout(()=>finishMove(2),200);return}
-  if(pick.m.type==='mark'){
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
-    const st=stickerMap()[pick.m.i];st.owner=2;st.mt=performance.now();SND.mark();
-    setUI();
-    setTimeout(()=>finishMove(2),420);
-  }else{
-    cpuRotLeft=Math.max(0,cpuRotLeft-1);
-    const r=ROTS[pick.m.r];
-    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
-      if(outcome(boardNow()))finishMove(2);   // 回転で決着した場合
-      else cpuActAdv(n+1,false);
-    },120));
-  }
-}
-/* ---- 探索: 手=マーク(ターン終了) / 回転(連続可) / ターン終了 を1手として扱う ---- */
-const ABORT_SEARCH={};
-const SRCH={dl:0,n:0};
-function winCells(b,who){
-  const out=[];
-  for(const l of LINES){
-    let w=0,e=-1,o=false;
-    for(const i of l){if(b[i]===who)w++;else if(b[i]===0)e=i;else o=true}
-    if(w===2&&e>=0&&!o)out.push(e);
-  }
-  return out;
-}
-/* 静的評価: 人間のリーチ(阻止対象)と自分のリーチ(作る対象)の数 */
-function leafEval(b,L){
-  const r2=countThreats(b,2),r1=countThreats(b,1);
-  return L.reachW*(r2*0.7-r1)+L.multiW*(Math.max(0,r2-1)*0.7-Math.max(0,r1-1));
-}
-/* マーク候補: 即勝ち > 相手リーチ阻止 > 線数の多い場所 の順に上位K */
-function markCands(b,side,K){
-  const oppW=new Set(winCells(b,3-side)),ownW=new Set(winCells(b,side));
-  const arr=[];
-  for(let i=0;i<NCELL;i++)if(b[i]===0)
-    arr.push({i,pre:ownW.has(i)?1000:oppW.has(i)?900:LINE_COUNT[i]});
-  arr.sort((x,y)=>y.pre-x.pre);
-  return arr.slice(0,K);
-}
-function kidsOf(b,side,M,R,rt,L,W){
-  const kids=[];
-  if(rt===0&&M[side]>0)for(const c of markCands(b,side,W.mark)){
-    const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});
-  }
-  if(R[side]>0&&rt<L.chainCap){
-    for(let r=0;r<ROTS.length;r++){
-      const nb=rotBoard(b,ROTS[r]);
-      if(nb.every((v,i)=>v===b[i]))continue;
-      kids.push({t:1,r,nb});
-    }
-  }
-  return kids;
-}
-/* side: 1=人間 2=CPU。M/R は [_, 人間の残数, CPUの残数]。rt は今ターンの回転回数 */
-function sMinimax(b,side,M,R,rt,depth,alpha,beta,L,W){
-  if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT_SEARCH;
-  const o=outcome(b);
-  if(o)return o==='C'?1e6+depth:o==='P'?-1e6-depth:-300;
-  if(depth<=0)return leafEval(b,L);
-  const maxing=side===2;
-  let kids=kidsOf(b,side,M,R,rt,L,W);
-  for(const k of kids)k.v=leafEval(k.nb,L);
-  kids.sort((x,y)=>maxing?y.v-x.v:x.v-y.v);
-  let rots=0;
-  kids=kids.filter(k=>k.t===0||(++rots<=W.rot));
-  let best=maxing?-Infinity:Infinity;
-  for(const k of kids){
-    let v;
-    if(k.t===0){const M2=M.slice();M2[side]--;v=sMinimax(k.nb,3-side,M2,R,0,depth-1,alpha,beta,L,W)}
-    else{const R2=R.slice();R2[side]--;v=sMinimax(k.nb,side,M,R2,rt+1,depth-1,alpha,beta,L,W)}
-    if(maxing){if(v>best)best=v;if(best>alpha)alpha=best}
-    else{if(v<best)best=v;if(best<beta)beta=best}
-    if(beta<=alpha)break;
-  }
-  if(rt>0&&beta>alpha){
-    const v=sMinimax(b,3-side,M,R,0,depth-1,alpha,beta,L,W);
-    if(maxing){if(v>best)best=v}else{if(v<best)best=v}
-  }
-  if(best===Infinity||best===-Infinity)return leafEval(b,L);
-  return best;
-}
-function cpuRootSearch(b,M,R,rt,d,L,W){
-  const RW={mark:NCELL,rot:ROTS.length};
-  let kids=kidsOf(b,2,M,R,rt,L,RW);
-  for(const k of kids)k.v=leafEval(k.nb,L);
-  kids.sort((x,y)=>y.v-x.v);
-  kids=kids.slice(0,W.root);
-  let alpha=-Infinity,bestV=-Infinity,bestK=null;
-  for(const k of kids){
-    let v;
-    if(k.t===0){const M2=M.slice();M2[2]--;v=sMinimax(k.nb,1,M2,R,0,d-1,alpha,Infinity,L,W)}
-    else{const R2=R.slice();R2[2]--;v=sMinimax(k.nb,2,M,R2,rt+1,d-1,alpha,Infinity,L,W)}
-    if(v>bestV){bestV=v;bestK=k}
-    if(bestV>alpha)alpha=bestV;
-  }
-  if(rt>0){
-    const v=sMinimax(b,1,M,R,0,d-1,alpha,Infinity,L,W);
-    if(v>bestV){bestV=v;bestK={end:true}}
-  }
-  return {k:bestK,v:bestV};
-}
-/* 反復深化: 制限時間内で到達した最も深い結果を採用 */
-function cpuSearchAct(n){
-  const L=LEVELS[level];
-  const b=boardNow();
-  const M=[0,markLeft,cpuMarkLeft],R=[0,rotLeft,cpuRotLeft];
-  SRCH.dl=Date.now()+L.budgetMs;SRCH.n=0;
-  let res=null;
-  for(let d=1;d<=L.searchDepth;d++){
-    try{res=cpuRootSearch(b,M,R,n,d,L,L.search)}
-    catch(e){if(e===ABORT_SEARCH)break;throw e}
-  }
-  if(!res||!res.k||res.k.end){setTimeout(()=>finishMove(2),200);return}
-  const k=res.k;
-  if(k.t===0){
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
-    const st=stickerMap()[k.i];st.owner=2;st.mt=performance.now();SND.mark();
-    setUI();
-    setTimeout(()=>finishMove(2),420);
-  }else{
-    cpuRotLeft=Math.max(0,cpuRotLeft-1);
-    const r=ROTS[k.r];
-    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
-      if(outcome(boardNow()))finishMove(2);
-      else cpuSearchAct(n+1);
-    },120));
+    if(!playerHasAction())setTimeout(()=>endPlayerTurn(true),300);
   }
 }
 function cpuTurn(){
   if(state!=='cpu'||playMode!=='cpu')return;
-  const L=LEVELS[level]||LEVELS.EASY;
-  if(L.chain){state='busy';lastWho=1;setUI();cpuSearchAct(0);return}
-  const m=cpuChoose(boardNow(),level);
-  if(!m){setTimeout(()=>finishMove(2),200);return}
   state='busy';lastWho=1;setUI();
-  if(m.type==='mark'){
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
-    const st=stickerMap()[m.i];st.owner=2;st.mt=performance.now();SND.mark();
+  cpuStep(0);
+}
+function cpuStep(n){
+  const P=LEVELS[level]||LEVELS.EASY;
+  const b=boardNow();
+  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random);
+  if(a.type==='end'){turnNoAct=(n===0);setTimeout(()=>finishMove(2),200);return}
+  turnNoAct=false;
+  if(a.type==='mark'){
+    cpuPool=Math.max(0,cpuPool-MARK_COST);syncCounts();
+    const st=stickerMap()[a.i];st.owner=2;st.mt=performance.now();SND.mark();
+    setUI();
     setTimeout(()=>finishMove(2),420);
   }else{
-    cpuRotLeft=Math.max(0,cpuRotLeft-1);
-    const r=ROTS[m.r];
-    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>finishMove(2),120));
+    cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
+    const r=ROTS[a.r];
+    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
+      if(outcome(boardNow()))finishMove(2);
+      else cpuStep(n+1);
+    },120));
   }
 }
 function doPlayerMark(st){
   if(markLeft<=0||rotatedThisTurn)return;
   clearTurnHist();
   state='busy';lastWho=2;
-  markLeft--;
+  playerPool-=MARK_COST;syncCounts();
   // find slot index for net sync
   let slot=-1;const map=stickerMap();
   for(let i=0;i<NCELL;i++)if(map[i]===st){slot=i;break}
@@ -1284,10 +1153,10 @@ function doPlayerMark(st){
   setTimeout(()=>finishMove(1),400);
 }
 function doPlayerRot(r){
-  if(rotLeft<=0)return;
+  if(!blocksOpp(r,1))return;   // 相手のリーチを減らさない回転は不可
   pushTurnHist();
   state='busy';lastWho=2;setUI();
-  rotLeft--;
+  playerPool-=ROT_COST;syncCounts();
   rotatedThisTurn=true;
   if(playMode==='pvp')netSend({type:'rot',axis:r.axis,layer:r.layer,dir:r.dir});
   startRot(r.axis,r.layer,r.dir,()=>{
@@ -1299,8 +1168,9 @@ function doPlayerRot(r){
 }
 function endPlayerTurn(force){
   if(state!=='player')return;
-  if(!force&&!rotatedThisTurn&&!(markLeft<=0&&rotLeft<=0))return;
+  if(!force&&!rotatedThisTurn&&playerHasAction())return;
   clearTurnHist();
+  turnNoAct=!rotatedThisTurn;
   state='busy';lastWho=2;setUI();
   if(playMode==='pvp')netSend({type:'end'});
   setTimeout(()=>finishMove(1),200);
@@ -1328,15 +1198,7 @@ function endGame(o,b){
 
 function assignSeats(){
   humanFirst=Math.random()<0.5;
-  // A1: second player gets mark bonus
-  if(humanFirst){
-    markLeft=MARK_MAX;
-    cpuMarkLeft=MARK_MAX+SECOND_MARK_BONUS;
-  }else{
-    markLeft=MARK_MAX+SECOND_MARK_BONUS;
-    cpuMarkLeft=MARK_MAX;
-  }
-  rotLeft=ROT_MAX;cpuRotLeft=ROT_MAX;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;
 }
 function beginPlay(){
   $('deal').classList.add('hidden');$('deal').classList.remove('show');
@@ -1476,7 +1338,7 @@ function startCpu(lv){
 $('lvEASY').onclick=()=>startCpu('EASY');
 $('lvNORMAL').onclick=()=>startCpu('NORMAL');
 $('lvHARD').onclick=()=>startCpu('HARD');
-$('lvMASTER').onclick=()=>startCpu('MASTER');
+$('lvMASTER').onclick=()=>startCpu('PERFECT');
 $('btnLocal').onclick=()=>{
   $('nickInput').classList.remove('hidden');
   $('btnOnlineStart').classList.add('hidden');
