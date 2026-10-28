@@ -329,9 +329,42 @@ function applyMove(b,m,who){
 const LEVELS={
   EASY:  {noise:6.0, defend:true, threat:true, mistakeRate:0.55, mistakesPerGame:99},
   NORMAL:{noise:2.0, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:4},
-  HARD:  {noise:0.6, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:1},
-  MASTER:{noise:0,   defend:true, threat:true, mistakeRate:0,    mistakesPerGame:0}
+  HARD:  {noise:0.6, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:1,
+          chain:true, chainCap:6,  reachW:150, multiW:90,  lookahead:false},
+  MASTER:{noise:0,   defend:true, threat:true, mistakeRate:0,    mistakesPerGame:0,
+          chain:true, chainCap:12, reachW:260, multiW:160, lookahead:true}
 };
+/* HARD/MASTER: 人間のリーチ(2つ揃い+空き1)を最優先で潰し、自分のリーチを先に複数作る。
+   回転は改善がある限り何度でも連続して行い、最後に手番を終える(マークは手番終了)。 */
+function evalFull(b,L){
+  let s=heuristic(b)*0.3;
+  const oppR=countThreats(b,1),myR=countThreats(b,2);
+  s-=oppR*L.reachW+Math.max(0,oppR-1)*L.multiW;
+  s+=myR*L.reachW*0.7+Math.max(0,myR-1)*L.multiW;
+  if(!L.lookahead){
+    if(countWins(b,1)>0)s-=2000;
+  }else{
+    // 1手先: 人間が次に作れる最大リーチ数・即勝ちを読んで減点
+    let worst=0;
+    for(const h of genMoves(b)){
+      const hb=applyMove(b,h,1);
+      if(outcome(hb)==='P'){s-=2000;break}
+      const r=countThreats(hb,1);
+      if(r>worst)worst=r;
+    }
+    s-=worst*L.reachW*0.5;
+  }
+  return s;
+}
+function scoreAdv(b,m,L){
+  const nb=applyMove(b,m,2);
+  if(nb.every((v,i)=>v===b[i]))return -Infinity;
+  const o=outcome(nb);
+  if(o==='C')return 1e6;
+  if(o==='P')return -1e6;
+  if(o==='D')return -300;
+  return evalFull(nb,L)+(m.type==='mark'?LINE_COUNT[m.i]*0.25:0);
+}
 let mistakesLeft=99;
 function heuristic(b){
   const W=[0,1,6,40];let s=0;
@@ -1073,8 +1106,41 @@ function finishMove(who){
     if(markLeft<=0&&rotLeft<=0)setTimeout(()=>endPlayerTurn(true),300);
   }
 }
+/* HARD/MASTER: 1回の手番で回転を連続使用可能。改善がなくなった時点でターン終了 */
+function cpuActAdv(n,first){
+  const L=LEVELS[level];
+  const b=boardNow();
+  const canM=cpuMarkLeft>0, canR=cpuRotLeft>0&&n<L.chainCap;
+  const ranked=genMoves(b,canM,canR)
+    .map(m=>({m,s:scoreAdv(b,m,L)+Math.random()*L.noise}))
+    .filter(x=>x.s!==-Infinity)
+    .sort((x,y)=>y.s-x.s);
+  if(!ranked.length){setTimeout(()=>finishMove(2),200);return}
+  let pick=ranked[0];
+  // HARD のみ: 人間にリーチがない時だけ1回だけ手を緩める
+  if(first&&level==='HARD'&&mistakesLeft>0&&ranked.length>3&&countThreats(b,1)===0&&pick.s<500&&Math.random()<0.35){
+    mistakesLeft--;pick=ranked[1+Math.floor(Math.random()*2)];
+  }
+  // 最初の一手以外は「ここで終える」方が良ければ終了
+  if(!first&&pick.s<=evalFull(b,L)+0.5){setTimeout(()=>finishMove(2),200);return}
+  if(pick.m.type==='mark'){
+    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
+    const st=stickerMap()[pick.m.i];st.owner=2;st.mt=performance.now();SND.mark();
+    setUI();
+    setTimeout(()=>finishMove(2),420);
+  }else{
+    cpuRotLeft=Math.max(0,cpuRotLeft-1);
+    const r=ROTS[pick.m.r];
+    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
+      if(outcome(boardNow()))finishMove(2);   // 回転で決着した場合
+      else cpuActAdv(n+1,false);
+    },120));
+  }
+}
 function cpuTurn(){
   if(state!=='cpu'||playMode!=='cpu')return;
+  const L=LEVELS[level]||LEVELS.EASY;
+  if(L.chain){state='busy';lastWho=1;setUI();cpuActAdv(0,true);return}
   const m=cpuChoose(boardNow(),level);
   if(!m){setTimeout(()=>finishMove(2),200);return}
   state='busy';lastWho=1;setUI();
