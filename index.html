@@ -801,19 +801,34 @@ function onlineTry(tries){
   });
 }
 function showDealKnown(){
+  // 先手は両者のホストが決めた結果(humanFirst)で一致している。
+  // 演出: 両者の名前が入れ替わって点滅 → 先手の名前で止まる → ゲーム開始
   state='busy';
   const deal=document.getElementById('deal');
   const name=document.getElementById('dealName');
   const sub=document.getElementById('dealSub');
+  const a=myTag(),b=oppTag();
   deal.classList.remove('hidden');void deal.offsetWidth;deal.classList.add('show');
   name.classList.remove('pop');
-  name.textContent=humanFirst?myTag():oppTag();
-  sub.textContent=humanFirst?(myTag()+' GO FIRST'):(oppTag()+' GOES FIRST');
+  name.textContent='···';
+  sub.textContent='';
   SND.ui();
-  setTimeout(()=>{
-    deal.classList.add('hidden');deal.classList.remove('show');
-    beginPlay();
-  },1400);
+  let n=0;
+  const flick=setInterval(()=>{
+    name.textContent=n%2===0?a:b;
+    n++;
+    if(n>8){
+      clearInterval(flick);
+      name.textContent=humanFirst?a:b;
+      name.classList.add('pop');
+      sub.textContent=humanFirst?(a+' GOES FIRST'):(b+' GOES FIRST');
+      SND.ui();
+      setTimeout(()=>{
+        deal.classList.add('hidden');deal.classList.remove('show');
+        beginPlay();
+      },1100);
+    }
+  },90);
 }
 
 function cloneCubies(){
