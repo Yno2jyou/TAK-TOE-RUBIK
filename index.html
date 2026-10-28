@@ -477,12 +477,20 @@ let turnHist=[];           // undo stack for CURRENT turn only (rotates)
 let hits=[];
 
 /* ---------- multiplayer (PeerJS) ---------- */
-let peer=null,conn=null,isHost=false,roomCode='';
+const PEER_OPTS={
+  host:'0.peerjs.com',port:443,path:'/',secure:true,debug:0,
+  config:{iceServers:[
+    {urls:'stun:stun.l.google.com:19302'},
+    {urls:'stun:stun1.l.google.com:19302'}
+  ]}
+};
+let peer=null,conn=null,isHost=false,roomCode='',netStarted=false;
 function netSend(msg){if(conn&&conn.open)try{conn.send(msg)}catch(e){}}
 function netDestroy(){
-  try{if(conn)conn.close()}catch(e){}
-  try{if(peer)peer.destroy()}catch(e){}
-  peer=null;conn=null;isHost=false;roomCode='';
+  netStarted=false;
+  try{if(conn){conn.close();conn=null}}catch(e){}
+  try{if(peer){peer.destroy();peer=null}}catch(e){}
+  isHost=false;roomCode='';
 }
 function setNetWait(show,msg,code){
   const el=$('netwait');
@@ -490,6 +498,10 @@ function setNetWait(show,msg,code){
   el.classList.toggle('hidden',!show);
   if(msg!=null)$('netMsg').textContent=msg;
   if(code!=null)$('netCode').textContent=code;
+}
+function whenOpen(c,fn){
+  if(c.open)fn();
+  else c.once('open',fn);
 }
 function wireConn(c){
   conn=c;
@@ -502,21 +514,25 @@ function wireConn(c){
   });
   c.on('error',()=>{});
 }
+function bootGameFromNet(asHost,hostIsFirst){
+  if(netStarted)return;
+  netStarted=true;
+  humanFirst=asHost?hostIsFirst:!hostIsFirst;
+  assignSeatsFromFlags();
+  $('title').classList.add('hidden');
+  $('game').classList.remove('hidden');
+  setNetWait(false);
+  resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
+  rotatedThisTurn=false;clearTurnHist();userView=frontView();
+  $('result').classList.add('hidden');
+  $('turn').classList.remove('hidden');$('modes').classList.remove('hidden');
+  $('hint').classList.remove('hidden');$('legend').classList.remove('hidden');
+  showDealKnown();
+}
 function onNetData(msg){
   if(!msg||!msg.type)return;
   if(msg.type==='start'){
-    // host tells guest who is first (hostIsFirst) and starts
-    humanFirst=!msg.hostIsFirst; // guest is first iff host is not
-    assignSeatsFromFlags();
-    $('title').classList.add('hidden');
-    $('game').classList.remove('hidden');
-    setNetWait(false);
-    resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
-    rotatedThisTurn=false;clearTurnHist();userView=frontView();
-    $('result').classList.add('hidden');
-    $('turn').classList.remove('hidden');$('modes').classList.remove('hidden');
-    $('hint').classList.remove('hidden');$('legend').classList.remove('hidden');
-    beginPlay();
+    bootGameFromNet(false,!!msg.hostIsFirst);
     return;
   }
   if(state==='title'||state==='over')return;
@@ -546,36 +562,29 @@ function genRoomCode(){
   let s='';for(let i=0;i<6;i++)s+=chars[Math.floor(Math.random()*chars.length)];
   return s;
 }
+function hostStartGame(){
+  const hostIsFirst=Math.random()<0.5;
+  // send first so guest can boot; then host boots
+  netSend({type:'start',hostIsFirst});
+  setTimeout(()=>bootGameFromNet(true,hostIsFirst),80);
+}
 function startHost(code){
   if(typeof Peer==='undefined'){$('titleStatus').textContent='NETWORK LIBRARY MISSING';return}
   netDestroy();
   playMode='pvp';isHost=true;roomCode=code;
   setNetWait(true,'WAITING FOR PLAYER',code);
-  peer=new Peer('ttr-'+code,{debug:0});
-  peer.on('open',()=>{});
+  peer=new Peer('ttr-'+code,PEER_OPTS);
+  peer.on('open',id=>{
+    setNetWait(true,'WAITING FOR PLAYER',code);
+  });
   peer.on('connection',c=>{
     wireConn(c);
-    c.on('open',()=>{
-      // host decides first player and starts both
-      const hostIsFirst=Math.random()<0.5;
-      humanFirst=hostIsFirst;
-      assignSeatsFromFlags();
-      netSend({type:'start',hostIsFirst});
-      $('title').classList.add('hidden');
-      $('game').classList.remove('hidden');
-      setNetWait(false);
-      resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
-      rotatedThisTurn=false;clearTurnHist();userView=frontView();
-      $('result').classList.add('hidden');
-      $('turn').classList.remove('hidden');$('modes').classList.remove('hidden');
-      $('hint').classList.remove('hidden');$('legend').classList.remove('hidden');
-      // brief deal flash then play
-      showDealKnown();
-    });
+    whenOpen(c,hostStartGame);
   });
   peer.on('error',err=>{
-    setNetWait(true,'ROOM ERROR',String(err.type||err));
-    setTimeout(()=>{setNetWait(false);netDestroy()},1500);
+    const t=err&&err.type?err.type:String(err);
+    setNetWait(true,t==='unavailable-id'?'CODE IN USE — TRY JOIN':'ROOM ERROR: '+t,code);
+    setTimeout(()=>{setNetWait(false);netDestroy()},2000);
   });
 }
 function startJoin(code){
@@ -583,15 +592,35 @@ function startJoin(code){
   netDestroy();
   playMode='pvp';isHost=false;roomCode=code;
   setNetWait(true,'JOINING ROOM',code);
-  peer=new Peer({debug:0});
-  peer.on('open',()=>{
+  peer=new Peer(PEER_OPTS);
+  let tries=0;
+  const tryConnect=()=>{
+    if(!peer||netStarted)return;
+    tries++;
+    setNetWait(true,tries>1?'RETRYING… ('+tries+')':'JOINING ROOM',code);
     const c=peer.connect('ttr-'+code,{reliable:true});
-    wireConn(c);
-    c.on('open',()=>setNetWait(true,'CONNECTED — WAITING',code));
-  });
+    let done=false;
+    const fail=()=>{
+      if(done||netStarted)return;done=true;
+      try{c.close()}catch(e){}
+      if(tries<8)setTimeout(tryConnect,900);
+      else{
+        setNetWait(true,'CANNOT JOIN — CHECK CODE','');
+        setTimeout(()=>{setNetWait(false);netDestroy()},2000);
+      }
+    };
+    const t=setTimeout(fail,4000);
+    c.on('open',()=>{
+      if(done)return;done=true;clearTimeout(t);
+      wireConn(c);
+      setNetWait(true,'CONNECTED — WAITING',code);
+    });
+    c.on('error',fail);
+  };
+  peer.on('open',tryConnect);
   peer.on('error',err=>{
-    setNetWait(true,'CANNOT JOIN',String(err.type||err));
-    setTimeout(()=>{setNetWait(false);netDestroy()},1500);
+    setNetWait(true,'PEER ERROR: '+(err&&err.type?err.type:err),'');
+    setTimeout(()=>{setNetWait(false);netDestroy()},2000);
   });
 }
 function startOnline(){
@@ -599,76 +628,61 @@ function startOnline(){
   netDestroy();
   playMode='pvp';
   setNetWait(true,'MATCHING…','');
-  const slot=Math.floor(Date.now()/25000);
-  const tryIds=[0,1,2].map(i=>'ttr-ol-'+slot+'-'+i);
-  let idx=0;
-  function tryNext(){
-    if(idx>=tryIds.length){
-      // become host on fresh id
-      const code='OL'+genRoomCode().slice(0,4);
-      isHost=true;roomCode=code;
-      setNetWait(true,'MATCHING… (HOST)','');
-      peer=new Peer('ttr-ol-host-'+code,{debug:0});
-      peer.on('open',()=>{});
-      peer.on('connection',c=>{
-        wireConn(c);
-        c.on('open',()=>{
-          const hostIsFirst=Math.random()<0.5;
-          humanFirst=hostIsFirst;assignSeatsFromFlags();
-          netSend({type:'start',hostIsFirst});
-          $('title').classList.add('hidden');$('game').classList.remove('hidden');
-          setNetWait(false);
-          resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
-          rotatedThisTurn=false;clearTurnHist();userView=frontView();
-          $('result').classList.add('hidden');
-          $('turn').classList.remove('hidden');$('modes').classList.remove('hidden');
-          $('hint').classList.remove('hidden');$('legend').classList.remove('hidden');
-          showDealKnown();
-        });
-      });
-      peer.on('error',()=>{setNetWait(true,'MATCH FAILED','');setTimeout(()=>{setNetWait(false);netDestroy()},1200)});
+  // time-bucketed rooms: try join existing host, else become host
+  const bucket=Math.floor(Date.now()/20000);
+  const slots=[0,1,2,3].map(i=>'ttr-ol-'+bucket+'-'+i)
+    .concat([0,1].map(i=>'ttr-ol-'+(bucket-1)+'-'+i));
+  let si=0;
+  function becomeHost(slotId){
+    netDestroy();
+    playMode='pvp';isHost=true;roomCode=slotId.replace('ttr-ol-','');
+    setNetWait(true,'MATCHING… WAITING','');
+    peer=new Peer(slotId,PEER_OPTS);
+    peer.on('open',()=>setNetWait(true,'MATCHING… WAITING',''));
+    peer.on('connection',c=>{
+      wireConn(c);
+      whenOpen(c,hostStartGame);
+    });
+    peer.on('error',err=>{
+      if(err&&err.type==='unavailable-id'){tryJoin();}
+      else{
+        setNetWait(true,'MATCH FAILED','');
+        setTimeout(()=>{setNetWait(false);netDestroy()},1500);
+      }
+    });
+  }
+  function tryJoin(){
+    if(si>=slots.length){
+      becomeHost('ttr-ol-'+bucket+'-'+Math.floor(Math.random()*50));
       return;
     }
-    const id=tryIds[idx++];
+    const id=slots[si++];
+    netDestroy();
+    playMode='pvp';isHost=false;
     setNetWait(true,'MATCHING…','');
-    if(peer)try{peer.destroy()}catch(e){}
-    peer=new Peer({debug:0});
+    peer=new Peer(PEER_OPTS);
     peer.on('open',()=>{
       const c=peer.connect(id,{reliable:true});
       let settled=false;
-      const t=setTimeout(()=>{if(!settled){settled=true;try{c.close()}catch(e){}tryNext()}},2500);
+      const t=setTimeout(()=>{
+        if(settled)return;settled=true;
+        try{c.close()}catch(e){}
+        // no host there — try to claim this slot as host
+        becomeHost(id);
+      },2800);
       c.on('open',()=>{
         if(settled)return;settled=true;clearTimeout(t);
-        isHost=false;wireConn(c);
+        wireConn(c);
         setNetWait(true,'MATCH FOUND','');
       });
-      c.on('error',()=>{if(!settled){settled=true;clearTimeout(t);tryNext()}});
+      c.on('error',()=>{
+        if(settled)return;settled=true;clearTimeout(t);
+        tryJoin();
+      });
     });
-    peer.on('error',()=>{tryNext()});
+    peer.on('error',()=>tryJoin());
   }
-  // also listen as host on first slot id while trying
-  peer=new Peer(tryIds[0],{debug:0});
-  isHost=true;
-  peer.on('open',()=>{
-    setNetWait(true,'MATCHING…','');
-  });
-  peer.on('connection',c=>{
-    wireConn(c);
-    c.on('open',()=>{
-      const hostIsFirst=Math.random()<0.5;
-      humanFirst=hostIsFirst;assignSeatsFromFlags();
-      netSend({type:'start',hostIsFirst});
-      $('title').classList.add('hidden');$('game').classList.remove('hidden');
-      setNetWait(false);
-      resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
-      rotatedThisTurn=false;clearTurnHist();userView=frontView();
-      $('result').classList.add('hidden');
-      $('turn').classList.remove('hidden');$('modes').classList.remove('hidden');
-      $('hint').classList.remove('hidden');$('legend').classList.remove('hidden');
-      showDealKnown();
-    });
-  });
-  peer.on('error',()=>{/* id taken — try join path */ tryNext()});
+  tryJoin();
 }
 function showDealKnown(){
   state='busy';
