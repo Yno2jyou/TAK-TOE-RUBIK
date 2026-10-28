@@ -145,7 +145,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
       <button id="lvMASTER" class="btn sm">MASTER</button>
     </div>
     <div class="sec">MULTI</div>
-    <input id="nickInput" class="hidden" type="text" maxlength="8" placeholder="NICKNAME" autocomplete="off" spellcheck="false">
+    <input id="nickInput" class="hidden" type="text" maxlength="8" placeholder="PLAYER NAME" autocomplete="off" spellcheck="false">
     <button id="btnOnlineStart" class="btn sm hidden">START MATCHING</button>
     <div class="row">
       <button id="btnLocal" class="btn">LOCAL</button>
@@ -510,9 +510,9 @@ const PEER_OPTS={
 };
 let peer=null,conn=null,isHost=false,roomCode='',netStarted=false,startSent=false;
 let oppName='';
-function myNick(){return (document.getElementById('nickInput').value||'').trim().slice(0,8)}
-function myTag(){return playMode==='pvp'?(myNick()||'YOU'):'YOU'}
-function oppTag(){return playMode==='pvp'?(oppName||'OPP'):'CPU'}
+function myName(){return (document.getElementById('nickInput').value||'').trim().slice(0,8)}
+function myTag(){return playMode==='pvp'?(myName()||(isHost?'PLAYER 1':'PLAYER 2')):'YOU'}
+function oppTag(){return playMode==='pvp'?(oppName||(isHost?'PLAYER 2':'PLAYER 1')):'CPU'}
 function netSend(msg){
   if(conn&&conn.open){try{conn.send(msg)}catch(e){console.warn('send',e)}}
 }
@@ -612,7 +612,7 @@ function hostStartGame(){
   const hostIsFirst=Math.random()<0.5;
   startSent=true;
   setNetWait(true,'STARTING…',roomCode);
-  netSend({type:'start',hostIsFirst,hostName:myNick()});
+  netSend({type:'start',hostIsFirst,hostName:myName()});
   setTimeout(()=>bootGameFromNet(true,hostIsFirst),120);
 }
 function makePeer(id){
@@ -700,7 +700,7 @@ function startJoin(code){
       if(settled)return;settled=true;clearTimeout(timer);
       wireConn(c);
       setNetWait(true,'CONNECTED — WAITING',code);
-      netSend({type:'ping',name:myNick()});
+      netSend({type:'ping',name:myName()});
     });
     c.on('error',e=>fail(e));
   };
@@ -789,7 +789,7 @@ function onlineTry(tries){
         }
       });
       setNetWait(true,'MATCH FOUND',room);
-      netSend({type:'ping',name:myNick()});
+      netSend({type:'ping',name:myName()});
     });
     c.on('error',()=>{});
   });
@@ -986,13 +986,15 @@ const $=id=>document.getElementById(id);
 let lastWho=2;
 function setUI(){
   const mine=state==='player';
-  const opp=playMode==='pvp'?'OPP':'CPU';
+  const opp=oppTag();
   const oppTurn=opp+' TURN';
   $('turn').textContent=state==='over'?'':(mine||(state==='busy'&&lastWho===2)?'YOUR TURN':oppTurn);
   if(state==='busy'&&lastWho===1)$('turn').textContent=oppTurn;
   if(state==='busy'&&lastWho===2)$('turn').textContent='YOUR TURN';
   const cpuWho=document.querySelector('#legend .who.cpu');
   if(cpuWho)cpuWho.textContent=opp;
+  const youWho=document.querySelector('#legend .who.you');
+  if(youWho)youWho.textContent=myTag();
   const can=state==='player';
   const canMark=can&&markLeft>0;
   const canRot=can&&rotLeft>0;
@@ -1153,7 +1155,7 @@ function beginPlay(){
 function showDealThenStart(){
   state='busy';
   assignSeats();
-  const oppLabel=playMode==='pvp'?'OPP':'CPU';
+  const oppLabel=oppTag();
   const deal=$('deal'),name=$('dealName'),sub=$('dealSub');
   deal.classList.remove('hidden');
   void deal.offsetWidth;
@@ -1306,7 +1308,7 @@ $('btnOnline').onclick=()=>{
   $('localBox').classList.add('hidden');
   $('nickInput').classList.remove('hidden');
   $('btnOnlineStart').classList.remove('hidden');
-  $('titleStatus').textContent='NICKNAMEを入力して開始';
+  $('titleStatus').textContent='プレイヤー名を入力して開始';
 };
 $('btnOnlineStart').onclick=()=>{ensureAudio();SND.ui();startOnline()};
 $('netCancel').onclick=()=>{netDestroy();setNetWait(false);$('titleStatus').textContent=''};
