@@ -380,7 +380,7 @@ function kidsOf(b,side,Q,rt,cap,W){
     for(let r=0;r<ROTS.length;r++){
       const nb=rotBoard(b,ROTS[r]);
       if(nb.every((v,i)=>v===b[i]))continue;
-      if(countThreats(nb,3-side)>=oppBefore)continue;
+
       kids.push({t:1,r,nb});
     }
   }
@@ -1029,11 +1029,9 @@ function updateAnim(now){
 /* ---------- turn flow ---------- */
 const $=id=>document.getElementById(id);
 let lastWho=2;
-/* 回転は相手のリーチを減らす場合だけ有効 */
+/* 回転は残コストがあれば自由に使える(相手リーチの阻止に限定しない) */
 function blocksOpp(r,who){
-  if((who===1?playerPool:cpuPool)<ROT_COST)return false;
-  const b=boardNow();
-  return countThreats(rotBoard(b,r),3-who)<countThreats(b,3-who);
+  return (who===1?playerPool:cpuPool)>=ROT_COST;
 }
 function rotOK(who){return ROTS.some(r=>blocksOpp(r,who))}
 function playerMarkOK(){return markLeft>0&&!rotatedThisTurn}
