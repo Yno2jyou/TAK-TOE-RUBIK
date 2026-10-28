@@ -1046,7 +1046,7 @@ function setUI(){
   const youWho=document.querySelector('#legend .who.you');
   if(youWho)youWho.textContent=myTag();
   const can=state==='player';
-  const canMark=can&&markLeft>0;
+  const canMark=can&&markLeft>0&&!rotatedThisTurn;
   const canRot=can&&rotLeft>0;
   // auto-switch mode when current choice is exhausted
   if(can&&mode==='MARK'&&!canMark&&canRot)mode='ROTATE';
@@ -1167,7 +1167,7 @@ function markCands(b,side,K){
 }
 function kidsOf(b,side,M,R,rt,L,W){
   const kids=[];
-  if(M[side]>0)for(const c of markCands(b,side,W.mark)){
+  if(rt===0&&M[side]>0)for(const c of markCands(b,side,W.mark)){
     const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});
   }
   if(R[side]>0&&rt<L.chainCap){
@@ -1272,7 +1272,7 @@ function cpuTurn(){
   }
 }
 function doPlayerMark(st){
-  if(markLeft<=0)return;
+  if(markLeft<=0||rotatedThisTurn)return;
   clearTurnHist();
   state='busy';lastWho=2;
   markLeft--;
@@ -1294,7 +1294,6 @@ function doPlayerRot(r){
     const b=boardNow(),o=outcome(b);
     if(o){endGame(o,b);return}
     state='player';
-    if(rotLeft<=0&&markLeft>0)mode='MARK';
     setUI();
   });
 }
@@ -1435,8 +1434,8 @@ cv.addEventListener('pointerdown',e=>{
 cv.addEventListener('pointermove',e=>{
   if(!down){
     const h=hitTest(e.clientX,e.clientY);
-    hoverSt=(h&&h.st.owner===0&&markLeft>0)?h.st:null;
-    cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
+    hoverSt=(h&&h.st.owner===0&&markLeft>0&&!rotatedThisTurn)?h.st:null;
+    cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0&&!rotatedThisTurn?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
     return;
   }
   if(!down.mode){
@@ -1454,7 +1453,7 @@ cv.addEventListener('pointermove',e=>{
   }
 });
 cv.addEventListener('pointerup',e=>{
-  if(down&&!down.mode&&mode==='MARK'&&markLeft>0&&canAct()){
+  if(down&&!down.mode&&mode==='MARK'&&markLeft>0&&!rotatedThisTurn&&canAct()){
     const h=hitTest(e.clientX,e.clientY);
     if(h&&h.st.owner===0)doPlayerMark(h.st);
   }
@@ -1510,7 +1509,7 @@ $('btnOnline').onclick=()=>{
 };
 $('btnOnlineStart').onclick=()=>{ensureAudio();SND.ui();startOnline()};
 $('netCancel').onclick=()=>{netDestroy();setNetWait(false);$('titleStatus').textContent=''};
-$('mMark').onclick=()=>{if(state!=='player'||markLeft<=0)return;mode='MARK';SND.ui();setUI()};
+$('mMark').onclick=()=>{if(state!=='player'||markLeft<=0||rotatedThisTurn)return;mode='MARK';SND.ui();setUI()};
 $('mRot').onclick=()=>{if(state!=='player'||rotLeft<=0)return;mode='ROTATE';SND.ui();setUI()};
 $('mEnd').onclick=()=>{if(state!=='player')return;SND.ui();endPlayerTurn()};
 $('undo').onclick=()=>doUndo();
@@ -1524,7 +1523,7 @@ $('restart').onclick=()=>{
 $('snd').onclick=()=>{soundOn=!soundOn;$('snd').textContent=soundOn?'SOUND ON':'SOUND OFF';SND.ui()};
 addEventListener('keydown',e=>{
   if(state!=='player')return;
-  if((e.key==='m'||e.key==='M')&&markLeft>0){mode='MARK';SND.ui();setUI()}
+  if((e.key==='m'||e.key==='M')&&markLeft>0&&!rotatedThisTurn){mode='MARK';SND.ui();setUI()}
   if((e.key==='r'||e.key==='R')&&rotLeft>0){mode='ROTATE';SND.ui();setUI()}
 });
 
