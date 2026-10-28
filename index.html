@@ -144,6 +144,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
       <button id="lvMASTER" class="btn sm">MASTER</button>
     </div>
     <div class="sec">MULTI</div>
+    <input id="nickInput" type="text" maxlength="8" placeholder="NICKNAME" autocomplete="off" spellcheck="false">
     <div class="row">
       <button id="btnLocal" class="btn">LOCAL</button>
       <button id="btnOnline" class="btn">ONLINE</button>
@@ -217,6 +218,18 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
 <script>window.Peer||document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
 <script>
 'use strict';
+/* モバイル: キーボードが出ても入力欄が隠れないよう、タイトル画面を可視領域に合わせる */
+(function(){
+  const t=document.getElementById('title');
+  const vv=window.visualViewport;
+  if(!t||!vv)return;
+  const fit=()=>{t.style.top=vv.offsetTop+'px';t.style.height=vv.height+'px'};
+  vv.addEventListener('resize',fit);vv.addEventListener('scroll',fit);fit();
+  ['roomInput','nickInput'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el)el.addEventListener('focus',()=>setTimeout(()=>el.scrollIntoView({block:'center'}),350));
+  });
+})();
 /* =====================================================
    PART 1 : GAME LOGIC  (no drawing here)
    A cell = ONE square (sticker) on the outside of the cube. 54 cells.
@@ -489,12 +502,16 @@ const PEER_OPTS={
     {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
   ]}
 };
-let peer=null,conn=null,isHost=false,roomCode='',netStarted=false;
+let peer=null,conn=null,isHost=false,roomCode='',netStarted=false,startSent=false;
+let oppName='';
+function myNick(){return (document.getElementById('nickInput').value||'').trim().slice(0,8)}
+function myTag(){return playMode==='pvp'?(myNick()||'YOU'):'YOU'}
+function oppTag(){return playMode==='pvp'?(oppName||'OPP'):'CPU'}
 function netSend(msg){
   if(conn&&conn.open){try{conn.send(msg)}catch(e){console.warn('send',e)}}
 }
 function netDestroy(){
-  netStarted=false;
+  netStarted=false;startSent=false;
   try{if(conn){conn.close()}}catch(e){}
   conn=null;
   try{if(peer){peer.destroy()}}catch(e){}
@@ -536,6 +553,9 @@ function bootGameFromNet(asHost,hostIsFirst){
   document.getElementById('title').classList.add('hidden');
   document.getElementById('game').classList.remove('hidden');
   setNetWait(false);
+  const cl=document.querySelector('#legend .who.cpu'),yl=document.querySelector('#legend .who.you');
+  if(cl)cl.textContent=oppTag();
+  if(yl)yl.textContent=myTag();
   resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
   rotatedThisTurn=false;clearTurnHist();userView=frontView();
   document.getElementById('result').classList.add('hidden');
@@ -545,10 +565,15 @@ function bootGameFromNet(asHost,hostIsFirst){
 function onNetData(msg){
   if(!msg||!msg.type)return;
   if(msg.type==='start'){
+    oppName=(msg.hostName||'').slice(0,8);
     bootGameFromNet(false,!!msg.hostIsFirst);
     return;
   }
-  if(msg.type==='ping'){netSend({type:'pong'});return}
+  if(msg.type==='ping'){
+    // 参加側が名前を送ってきたらゲーム開始(ホストのみ)
+    if(isHost&&!netStarted&&!startSent){oppName=(msg.name||'').slice(0,8);hostStartGame()}
+    netSend({type:'pong'});return
+  }
   if(msg.type==='pong')return;
   if(state==='title'||state==='over')return;
   if(msg.type==='mark'){
@@ -579,8 +604,9 @@ function genRoomCode(){
 }
 function hostStartGame(){
   const hostIsFirst=Math.random()<0.5;
+  startSent=true;
   setNetWait(true,'STARTING…',roomCode);
-  netSend({type:'start',hostIsFirst});
+  netSend({type:'start',hostIsFirst,hostName:myNick()});
   setTimeout(()=>bootGameFromNet(true,hostIsFirst),120);
 }
 function makePeer(id){
@@ -614,8 +640,7 @@ function startHost(code){
     },25000);
     whenOpen(c,()=>{
       clearTimeout(t);
-      setNetWait(true,'LINKED — STARTING',code);
-      hostStartGame();
+      setNetWait(true,'LINKED — WAITING NAME',code);
     });
   });
   peer.on('error',err=>{
@@ -669,7 +694,7 @@ function startJoin(code){
       if(settled)return;settled=true;clearTimeout(timer);
       wireConn(c);
       setNetWait(true,'CONNECTED — WAITING',code);
-      netSend({type:'ping'});
+      netSend({type:'ping',name:myNick()});
     });
     c.on('error',e=>fail(e));
   };
@@ -725,7 +750,7 @@ function onlineTry(tries){
       if(netStarted){try{c.close()}catch(e){}return}
       setNetWait(true,'PLAYER FOUND…',room);
       wireConn(c);
-      whenOpen(c,()=>{setNetWait(true,'LINKED — STARTING',room);hostStartGame()});
+      whenOpen(c,()=>{setNetWait(true,'LINKED — WAITING NAME',room)});
     });
     h.on('error',err=>{
       // someone else grabbed the host slot at the same moment -> join them
@@ -745,7 +770,7 @@ function onlineTry(tries){
       if(settled)return;
       try{c.close()}catch(e){}
       hostNow();
-    },4000);
+    },15000);
     c.on('open',()=>{
       if(settled)return;
       finish();
@@ -758,7 +783,7 @@ function onlineTry(tries){
         }
       });
       setNetWait(true,'MATCH FOUND',room);
-      netSend({type:'ping'});
+      netSend({type:'ping',name:myNick()});
     });
     c.on('error',()=>{});
   });
@@ -776,8 +801,8 @@ function showDealKnown(){
   const sub=document.getElementById('dealSub');
   deal.classList.remove('hidden');void deal.offsetWidth;deal.classList.add('show');
   name.classList.remove('pop');
-  name.textContent=humanFirst?'YOU':'OPP';
-  sub.textContent=humanFirst?'YOU GO FIRST':'OPP GOES FIRST';
+  name.textContent=humanFirst?myTag():oppTag();
+  sub.textContent=humanFirst?(myTag()+' GO FIRST'):(oppTag()+' GOES FIRST');
   SND.ui();
   setTimeout(()=>{
     deal.classList.add('hidden');deal.classList.remove('show');
