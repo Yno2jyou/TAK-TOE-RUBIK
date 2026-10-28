@@ -21,6 +21,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
 .btn.big{font-size:20px;padding:14px 48px}
 #title{
   position:fixed;inset:0;pointer-events:none;z-index:3;
+  overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
   display:flex;flex-direction:column;align-items:center;justify-content:space-between;
   padding:max(10px,1.5vh) 12px max(12px,1.5vh);
 }
@@ -223,7 +224,11 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
   const t=document.getElementById('title');
   const vv=window.visualViewport;
   if(!t||!vv)return;
-  const fit=()=>{t.style.top=vv.offsetTop+'px';t.style.height=vv.height+'px'};
+  const keepFocusVisible=()=>{
+    const a=document.activeElement;
+    if(a&&(a.id==='roomInput'||a.id==='nickInput'))a.scrollIntoView({block:'center'});
+  };
+  const fit=()=>{t.style.top=vv.offsetTop+'px';t.style.height=vv.height+'px';keepFocusVisible()};
   vv.addEventListener('resize',fit);vv.addEventListener('scroll',fit);fit();
   ['roomInput','nickInput'].forEach(id=>{
     const el=document.getElementById(id);
