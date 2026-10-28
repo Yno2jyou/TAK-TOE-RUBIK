@@ -145,7 +145,8 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
       <button id="lvMASTER" class="btn sm">MASTER</button>
     </div>
     <div class="sec">MULTI</div>
-    <input id="nickInput" type="text" maxlength="8" placeholder="NICKNAME" autocomplete="off" spellcheck="false">
+    <input id="nickInput" class="hidden" type="text" maxlength="8" placeholder="NICKNAME" autocomplete="off" spellcheck="false">
+    <button id="btnOnlineStart" class="btn sm hidden">START MATCHING</button>
     <div class="row">
       <button id="btnLocal" class="btn">LOCAL</button>
       <button id="btnOnline" class="btn">ONLINE</button>
@@ -1196,6 +1197,8 @@ function toTitle(){
   setNetWait(false);
   $('game').classList.add('hidden');$('title').classList.remove('hidden');
   $('localBox').classList.add('hidden');
+  $('nickInput').classList.add('hidden');
+  $('btnOnlineStart').classList.add('hidden');
   $('titleStatus').textContent='';
   layoutCube();
 }
@@ -1276,6 +1279,8 @@ $('lvNORMAL').onclick=()=>startCpu('NORMAL');
 $('lvHARD').onclick=()=>startCpu('HARD');
 $('lvMASTER').onclick=()=>startCpu('MASTER');
 $('btnLocal').onclick=()=>{
+  $('nickInput').classList.remove('hidden');
+  $('btnOnlineStart').classList.add('hidden');
   ensureAudio();SND.ui();
   $('localBox').classList.remove('hidden');
   $('titleStatus').textContent='ENTER A 6-LETTER CODE';
@@ -1296,7 +1301,14 @@ $('btnJoin').onclick=()=>{
   if(code.length<4){$('titleStatus').textContent='CODE TOO SHORT';return}
   startJoin(code);
 };
-$('btnOnline').onclick=()=>{ensureAudio();SND.ui();startOnline()};
+$('btnOnline').onclick=()=>{
+  ensureAudio();SND.ui();
+  $('localBox').classList.add('hidden');
+  $('nickInput').classList.remove('hidden');
+  $('btnOnlineStart').classList.remove('hidden');
+  $('titleStatus').textContent='NICKNAMEを入力して開始';
+};
+$('btnOnlineStart').onclick=()=>{ensureAudio();SND.ui();startOnline()};
 $('netCancel').onclick=()=>{netDestroy();setNetWait(false);$('titleStatus').textContent=''};
 $('mMark').onclick=()=>{if(state!=='player'||markLeft<=0)return;mode='MARK';SND.ui();setUI()};
 $('mRot').onclick=()=>{if(state!=='player'||rotLeft<=0)return;mode='ROTATE';SND.ui();setUI()};
