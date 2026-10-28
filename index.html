@@ -520,10 +520,10 @@ function wireConn(c){
     if(state!=='title'&&state!=='over'){
       setNetWait(true,'DISCONNECTED','');
       setTimeout(()=>{setNetWait(false);toTitle()},1200);
-    }else if(!netStarted&&isHost){
-      setNetWait(false);netDestroy();
-      const s=document.getElementById('titleStatus');
-      if(s)s.textContent='PLAYER LEFT';
+    }else if(!netStarted&&isHost&&conn===c){
+      // 相手が開始前に離脱/接続失敗 → 同じルームで再び待機
+      conn=null;
+      setNetWait(true,'WAITING FOR PLAYER',roomCode);
     }
   });
   c.on('error',e=>console.warn('conn error',e));
@@ -606,7 +606,14 @@ function startHost(code){
   peer.on('connection',c=>{
     setNetWait(true,'PLAYER FOUND…',code);
     wireConn(c);
+    const t=setTimeout(()=>{
+      if(!c.open&&!netStarted){
+        try{c.close()}catch(e){}
+        setNetWait(true,'WAITING FOR PLAYER',code);
+      }
+    },10000);
     whenOpen(c,()=>{
+      clearTimeout(t);
       setNetWait(true,'LINKED — STARTING',code);
       hostStartGame();
     });
@@ -638,7 +645,7 @@ function startJoin(code){
     setNetWait(true,'PEER CREATE FAILED','');
     return;
   }
-  let tries=0,curFail=null;
+  let tries=0;
   const tryConnect=()=>{
     if(!peer||netStarted)return;
     tries++;
@@ -656,7 +663,6 @@ function startJoin(code){
         setTimeout(()=>{setNetWait(false);netDestroy()},3000);
       }
     };
-    curFail=fail;
     const timer=setTimeout(()=>fail('timeout'),5000);
     c.on('open',()=>{
       if(settled)return;settled=true;clearTimeout(timer);
@@ -672,92 +678,47 @@ function startJoin(code){
   });
   peer.on('error',err=>{
     console.error('join peer error',err);
-    if(err&&err.type==='peer-unavailable'&&curFail){curFail('unavailable');return}
     setNetWait(true,'JOIN ERROR: '+((err&&err.type)||err),'');
     setTimeout(()=>{setNetWait(false);netDestroy()},2500);
   });
 }
-const ONLINE_ROOM='OLLOBBY';
 function startOnline(){
   if(typeof Peer==='undefined'){
     const s=document.getElementById('titleStatus');
     if(s)s.textContent='NETWORK LIBRARY MISSING';
     return;
   }
+  // Online = auto room code + host/join on a shared short code
+  const code='O'+genRoomCode().slice(0,5);
+  setNetWait(true,'MATCHING…',code);
+  // Try join first (someone may already host this second's bucket)
+  const bucket=String(Math.floor(Date.now()/15000)%10000);
+  const shared='OL'+bucket;
+  // Attempt join shared, else host shared
   netDestroy();
-  playMode='pvp';
-  onlineTry(0);
-}
-function onlineTry(tries){
-  const room=ONLINE_ROOM;
-  if(tries>=10){
-    setNetWait(true,'NO MATCH — TRY AGAIN','');
-    setTimeout(()=>{setNetWait(false);netDestroy()},2000);
-    return;
-  }
-  netDestroy();
-  playMode='pvp';roomCode=room;
-  setNetWait(true,tries?'MATCHING… '+(tries+1):'MATCHING…',room);
-  let p;
-  try{p=makePeer()}catch(e){setNetWait(true,'PEER CREATE FAILED','');return}
-  peer=p;
-  let settled=false,timer=null;
-  const finish=()=>{settled=true;clearTimeout(timer)};
-  const retryLater=()=>setTimeout(()=>onlineTry(tries+1),300+Math.random()*700);
-  // nobody is hosting the lobby yet -> become the host
-  const hostNow=()=>{
-    if(settled)return;
-    finish();
-    try{p.destroy()}catch(e){}
-    if(peer===p)peer=null;
-    let h;
-    try{h=makePeer('ttr-'+room)}catch(e){setNetWait(true,'PEER CREATE FAILED','');return}
-    peer=h;isHost=true;
-    setNetWait(true,'WAITING FOR PLAYER',room);
-    h.on('connection',c=>{
-      if(netStarted){try{c.close()}catch(e){}return}
-      setNetWait(true,'PLAYER FOUND…',room);
-      wireConn(c);
-      whenOpen(c,()=>{setNetWait(true,'LINKED — STARTING',room);hostStartGame()});
-    });
-    h.on('error',err=>{
-      // someone else grabbed the host slot at the same moment -> join them
-      if(err&&err.type==='unavailable-id'){
-        try{h.destroy()}catch(e){}
-        if(peer===h)peer=null;
-        retryLater();
-        return;
-      }
-      setNetWait(true,'MATCH ERROR: '+((err&&err.type)||err),'');
-      setTimeout(()=>{setNetWait(false);netDestroy()},2000);
-    });
-  };
-  p.on('open',()=>{
-    const c=p.connect('ttr-'+room,{reliable:true,serialization:'json'});
-    timer=setTimeout(()=>{
-      if(settled)return;
+  playMode='pvp';isHost=false;roomCode=shared;
+  setNetWait(true,'MATCHING…',shared);
+  peer=makePeer();
+  peer.on('open',()=>{
+    const c=peer.connect('ttr-'+shared,{reliable:true,serialization:'json'});
+    let settled=false;
+    const t=setTimeout(()=>{
+      if(settled)return;settled=true;
       try{c.close()}catch(e){}
-      hostNow();
-    },4000);
+      // host the shared room
+      try{peer.destroy()}catch(e){}
+      peer=null;
+      startHost(shared);
+      setNetWait(true,'MATCHING… WAITING',shared);
+    },3000);
     c.on('open',()=>{
-      if(settled)return;
-      finish();
-      isHost=false;
-      wireConn(c);
-      c.on('close',()=>{
-        if(!netStarted){
-          setNetWait(true,'LOBBY CLOSED','');
-          setTimeout(()=>{setNetWait(false);netDestroy()},1500);
-        }
-      });
-      setNetWait(true,'MATCH FOUND',room);
-      netSend({type:'ping'});
+      if(settled)return;settled=true;clearTimeout(t);
+      isHost=false;wireConn(c);
+      setNetWait(true,'MATCH FOUND',shared);
     });
     c.on('error',()=>{});
   });
-  p.on('error',err=>{
-    // 'peer-unavailable' = no host exists for this room yet (normal here)
-    if(err&&err.type==='peer-unavailable'){hostNow();return}
+  peer.on('error',err=>{
     setNetWait(true,'MATCH ERROR: '+((err&&err.type)||err),'');
     setTimeout(()=>{setNetWait(false);netDestroy()},2000);
   });
