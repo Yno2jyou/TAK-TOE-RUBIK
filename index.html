@@ -330,9 +330,11 @@ const LEVELS={
   EASY:  {noise:6.0, defend:true, threat:true, mistakeRate:0.55, mistakesPerGame:99},
   NORMAL:{noise:2.0, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:4},
   HARD:  {noise:0.6, defend:true, threat:true, mistakeRate:0,    mistakesPerGame:1,
-          chain:true, chainCap:6,  reachW:150, multiW:90,  lookahead:false},
+          chain:true, chainCap:6,  reachW:150, multiW:90,  lookahead:false,
+          searchDepth:5, budgetMs:2500, search:{mark:4, rot:18, root:24}},
   MASTER:{noise:0,   defend:true, threat:true, mistakeRate:0,    mistakesPerGame:0,
-          chain:true, chainCap:12, reachW:260, multiW:160, lookahead:true}
+          chain:true, chainCap:12, reachW:260, multiW:160, lookahead:true,
+          searchDepth:99, budgetMs:1200, search:{mark:12, rot:18, root:Infinity}}
 };
 /* HARD/MASTER: 人間のリーチ(2つ揃い+空き1)を最優先で潰し、自分のリーチを先に複数作る。
    回転は改善がある限り何度でも連続して行い、最後に手番を終える(マークは手番終了)。 */
@@ -1137,10 +1139,125 @@ function cpuActAdv(n,first){
     },120));
   }
 }
+/* ---- 探索: 手=マーク(ターン終了) / 回転(連続可) / ターン終了 を1手として扱う ---- */
+const ABORT_SEARCH={};
+const SRCH={dl:0,n:0};
+function winCells(b,who){
+  const out=[];
+  for(const l of LINES){
+    let w=0,e=-1,o=false;
+    for(const i of l){if(b[i]===who)w++;else if(b[i]===0)e=i;else o=true}
+    if(w===2&&e>=0&&!o)out.push(e);
+  }
+  return out;
+}
+/* 静的評価: 人間のリーチ(阻止対象)と自分のリーチ(作る対象)の数 */
+function leafEval(b,L){
+  const r2=countThreats(b,2),r1=countThreats(b,1);
+  return L.reachW*(r2*0.7-r1)+L.multiW*(Math.max(0,r2-1)*0.7-Math.max(0,r1-1));
+}
+/* マーク候補: 即勝ち > 相手リーチ阻止 > 線数の多い場所 の順に上位K */
+function markCands(b,side,K){
+  const oppW=new Set(winCells(b,3-side)),ownW=new Set(winCells(b,side));
+  const arr=[];
+  for(let i=0;i<NCELL;i++)if(b[i]===0)
+    arr.push({i,pre:ownW.has(i)?1000:oppW.has(i)?900:LINE_COUNT[i]});
+  arr.sort((x,y)=>y.pre-x.pre);
+  return arr.slice(0,K);
+}
+function kidsOf(b,side,M,R,rt,L,W){
+  const kids=[];
+  if(M[side]>0)for(const c of markCands(b,side,W.mark)){
+    const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});
+  }
+  if(R[side]>0&&rt<L.chainCap){
+    for(let r=0;r<ROTS.length;r++){
+      const nb=rotBoard(b,ROTS[r]);
+      if(nb.every((v,i)=>v===b[i]))continue;
+      kids.push({t:1,r,nb});
+    }
+  }
+  return kids;
+}
+/* side: 1=人間 2=CPU。M/R は [_, 人間の残数, CPUの残数]。rt は今ターンの回転回数 */
+function sMinimax(b,side,M,R,rt,depth,alpha,beta,L,W){
+  if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT_SEARCH;
+  const o=outcome(b);
+  if(o)return o==='C'?1e6+depth:o==='P'?-1e6-depth:-300;
+  if(depth<=0)return leafEval(b,L);
+  const maxing=side===2;
+  let kids=kidsOf(b,side,M,R,rt,L,W);
+  for(const k of kids)k.v=leafEval(k.nb,L);
+  kids.sort((x,y)=>maxing?y.v-x.v:x.v-y.v);
+  let rots=0;
+  kids=kids.filter(k=>k.t===0||(++rots<=W.rot));
+  let best=maxing?-Infinity:Infinity;
+  for(const k of kids){
+    let v;
+    if(k.t===0){const M2=M.slice();M2[side]--;v=sMinimax(k.nb,3-side,M2,R,0,depth-1,alpha,beta,L,W)}
+    else{const R2=R.slice();R2[side]--;v=sMinimax(k.nb,side,M,R2,rt+1,depth-1,alpha,beta,L,W)}
+    if(maxing){if(v>best)best=v;if(best>alpha)alpha=best}
+    else{if(v<best)best=v;if(best<beta)beta=best}
+    if(beta<=alpha)break;
+  }
+  if(rt>0&&beta>alpha){
+    const v=sMinimax(b,3-side,M,R,0,depth-1,alpha,beta,L,W);
+    if(maxing){if(v>best)best=v}else{if(v<best)best=v}
+  }
+  if(best===Infinity||best===-Infinity)return leafEval(b,L);
+  return best;
+}
+function cpuRootSearch(b,M,R,rt,d,L,W){
+  const RW={mark:NCELL,rot:ROTS.length};
+  let kids=kidsOf(b,2,M,R,rt,L,RW);
+  for(const k of kids)k.v=leafEval(k.nb,L);
+  kids.sort((x,y)=>y.v-x.v);
+  kids=kids.slice(0,W.root);
+  let alpha=-Infinity,bestV=-Infinity,bestK=null;
+  for(const k of kids){
+    let v;
+    if(k.t===0){const M2=M.slice();M2[2]--;v=sMinimax(k.nb,1,M2,R,0,d-1,alpha,Infinity,L,W)}
+    else{const R2=R.slice();R2[2]--;v=sMinimax(k.nb,2,M,R2,rt+1,d-1,alpha,Infinity,L,W)}
+    if(v>bestV){bestV=v;bestK=k}
+    if(bestV>alpha)alpha=bestV;
+  }
+  if(rt>0){
+    const v=sMinimax(b,1,M,R,0,d-1,alpha,Infinity,L,W);
+    if(v>bestV){bestV=v;bestK={end:true}}
+  }
+  return {k:bestK,v:bestV};
+}
+/* 反復深化: 制限時間内で到達した最も深い結果を採用 */
+function cpuSearchAct(n){
+  const L=LEVELS[level];
+  const b=boardNow();
+  const M=[0,markLeft,cpuMarkLeft],R=[0,rotLeft,cpuRotLeft];
+  SRCH.dl=Date.now()+L.budgetMs;SRCH.n=0;
+  let res=null;
+  for(let d=1;d<=L.searchDepth;d++){
+    try{res=cpuRootSearch(b,M,R,n,d,L,L.search)}
+    catch(e){if(e===ABORT_SEARCH)break;throw e}
+  }
+  if(!res||!res.k||res.k.end){setTimeout(()=>finishMove(2),200);return}
+  const k=res.k;
+  if(k.t===0){
+    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
+    const st=stickerMap()[k.i];st.owner=2;st.mt=performance.now();SND.mark();
+    setUI();
+    setTimeout(()=>finishMove(2),420);
+  }else{
+    cpuRotLeft=Math.max(0,cpuRotLeft-1);
+    const r=ROTS[k.r];
+    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
+      if(outcome(boardNow()))finishMove(2);
+      else cpuSearchAct(n+1);
+    },120));
+  }
+}
 function cpuTurn(){
   if(state!=='cpu'||playMode!=='cpu')return;
   const L=LEVELS[level]||LEVELS.EASY;
-  if(L.chain){state='busy';lastWho=1;setUI();cpuActAdv(0,true);return}
+  if(L.chain){state='busy';lastWho=1;setUI();cpuSearchAct(0);return}
   const m=cpuChoose(boardNow(),level);
   if(!m){setTimeout(()=>finishMove(2),200);return}
   state='busy';lastWho=1;setUI();
