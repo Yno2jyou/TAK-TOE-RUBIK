@@ -53,6 +53,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
 #netwait .code{font-size:min(10vw,42px);font-weight:800;letter-spacing:.24em;padding-left:.24em}
 #bar{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:14px 16px;z-index:3;font-size:13px;font-weight:700}
 #bar .r{display:flex;gap:12px;align-items:center}
+@media (max-width:640px){#bar .r{flex-direction:column;align-items:flex-end;gap:8px}#snd{order:0}#undo{order:1}}
 /* Play UI under the cube */
 #hud{
   position:fixed;left:0;right:0;bottom:max(28px,env(safe-area-inset-bottom));
@@ -218,7 +219,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>window.Peer||document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
-<script>
+<script id="main">
 const PLACE_COST=10;  // 配置1回の回転予算コスト
 const PLAN_BONUS=900; // ライン作りの経路の一手目に与える加点
 
@@ -708,12 +709,21 @@ function focusLayer(axis,layer){
   focusDir([s[0]*sg+cur[0]*0.25,s[1]*sg+cur[1]*0.25,s[2]*sg+cur[2]*0.25]);
 }
 /* 視線を目標へ滑らかに寄せる(回転行列は直交を保つように組み直す) */
+let camVel=[0,0,0];   // 視線の速度(滑らかな減速用)
 function followCam(dt){
   if(!camGoal&&pendingGoal&&performance.now()>=camHold){camGoal=pendingGoal;pendingGoal=null}
   if(!camGoal)return;
   const c=[userView[6],userView[7],userView[8]];
-  const k=1-Math.exp(-dt*camRate);
-  let nc=[c[0]+(camGoal[0]-c[0])*k,c[1]+(camGoal[1]-c[1])*k,c[2]+(camGoal[2]-c[2])*k];
+  // 臨界減衰バネ(SmoothDamp): 止まる直前までなめらかに減速し、余韻を残して落ち着く
+  const T=Math.max(dt,0)/1000,smooth=0.42,w=2/smooth,x=w*T;
+  const ex=1/(1+x+0.48*x*x+0.235*x*x*x);
+  let nc=[0,0,0];
+  for(let i=0;i<3;i++){
+    const ch=c[i]-camGoal[i];
+    const tmp=(camVel[i]+w*ch)*T;
+    camVel[i]=(camVel[i]-w*tmp)*ex;
+    nc[i]=camGoal[i]+(ch+tmp)*ex;
+  }
   const nl=Math.hypot(nc[0],nc[1],nc[2])||1;
   nc=nc.map(v=>v/nl);
   const a0=[userView[0],userView[1],userView[2]];
@@ -723,9 +733,26 @@ function followCam(dt){
   const an=a.map(v=>v/al);
   const b=[nc[1]*an[2]-nc[2]*an[1],nc[2]*an[0]-nc[0]*an[2],nc[0]*an[1]-nc[1]*an[0]];
   userView=[...an,...b,...nc];
-  if(c[0]*camGoal[0]+c[1]*camGoal[1]+c[2]*camGoal[2]>0.9995)camGoal=null;
+  const sp=Math.hypot(camVel[0],camVel[1],camVel[2]);
+  if(c[0]*camGoal[0]+c[1]*camGoal[1]+c[2]*camGoal[2]>0.9995&&sp<0.02){camGoal=null;camVel=[0,0,0]}
 }
-function orbit(dx,dy){camGoal=null;pendingGoal=null;camHold=0;userView=orth(mulM(mulM(rotM(0,dy*.008),rotM(1,dx*.008)),userView))}
+/* ドラッグの入力を1フレームごとに少しずつ反映する。
+   指の移動イベントは不規則に届くため、そのまま回すとカクつく。
+   届いた移動量を溜めておき、毎フレーム一定の割合で消化する(指を離した後も残りが余韻として回る) */
+let orbPend=[0,0];   // 未反映のドラッグ量(px)
+const ORB_TAU=70;    // 反映の速さ(ms)。大きいほど余韻が長くなる
+function applyInertia(dt){
+  if(!orbPend[0]&&!orbPend[1])return;
+  const k=1-Math.exp(-dt/ORB_TAU);
+  const dx=orbPend[0]*k,dy=orbPend[1]*k;
+  orbPend=[orbPend[0]-dx,orbPend[1]-dy];
+  if(Math.abs(orbPend[0])<0.05&&Math.abs(orbPend[1])<0.05)orbPend=[0,0];
+  userView=orth(mulM(mulM(rotM(0,dy*.008),rotM(1,dx*.008)),userView));
+}
+function orbit(dx,dy){
+  camGoal=null;pendingGoal=null;camHold=0;camVel=[0,0,0];
+  orbPend=[orbPend[0]+dx,orbPend[1]+dy];
+}
 
 /* state */
 let state='title';       // title | player | busy | cpu | over
@@ -894,7 +921,7 @@ function onNetData(msg){
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
     focusLayer(msg.axis,msg.layer);setOppHLLayer(msg.axis,msg.layer);
     const rb=formedKeys(boardNow(),2);
-    startRot(msg.axis,msg.layer,msg.dir,()=>{focusLine(newLineOf(rb,2));setUI()});
+    waitCamIdle(()=>startRot(msg.axis,msg.layer,msg.dir,()=>{focusLine(newLineOf(rb,2));setUI()}));
   }else if(msg.type==='unrot'){
     // 相手のUNDO: 直前の回転を逆向きに回し、記録も戻す
     const h=oppHist.pop();oppHL=null;
@@ -1199,7 +1226,7 @@ const SND={
 
 /* ---------- 3D helpers ---------- */
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const ease=t=>{const s=t*t*(3-2*t),k=3;return (1-Math.exp(-k*s))/(1-Math.exp(-k))};   // 始動はなだらか、後半は長く減衰して終端で0に収束
 const easeBack=t=>{const c1=1.7,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2)};
 let VM=null;
 function proj(P){
@@ -1305,7 +1332,7 @@ function hitTest(x,y){
 }
 
 /* ---------- rotation animation ---------- */
-function startRot(axis,layer,dir,done,dur=430){
+function startRot(axis,layer,dir,done,dur=600){
   anim={axis,layer,dir,t0:performance.now(),dur,ang:0,done};
   SND.rot();
 }
@@ -1333,14 +1360,16 @@ function playerMarkOK(){return markLeft>0}
 function playerRotOK(){return !rotLockTurn&&rotOK(1)}
 function placeOK(){return state==='player'&&!anim&&!rotatedThisTurn&&!placedThisTurn&&playerPool>=PLACE_COST&&boardNow().some(x=>x===0)}
 function playerHasAction(){return playerMarkOK()||playerRotOK()||placeOK()}
+/* 表示が変わるときだけDOMを書き換える(同じ値の再代入による再描画・リフローを防ぐ) */
+function _setT(id,t){const el=$(id);if(el&&el.textContent!==t)el.textContent=t}
 function setUI(){
   syncMarks();
   const mine=state==='player';
   const opp=oppTag();
   const oppTurn=opp+' TURN';
-  $('turn').textContent=state==='over'?'':(mine||(state==='busy'&&lastWho===2)?'YOUR TURN':oppTurn);
-  if(state==='busy'&&lastWho===1)$('turn').textContent=oppTurn;
-  if(state==='busy'&&lastWho===2)$('turn').textContent='YOUR TURN';
+  _setT('turn',state==='over'?'':(mine||(state==='busy'&&lastWho===2)?'YOUR TURN':oppTurn));
+  if(state==='busy'&&lastWho===1)_setT('turn',oppTurn);
+  if(state==='busy'&&lastWho===2)_setT('turn','YOUR TURN');
   const cpuWho=document.querySelector('#legend .who.cpu');
   if(cpuWho)cpuWho.textContent=opp;
   const youWho=document.querySelector('#legend .who.you');
@@ -1368,19 +1397,19 @@ function setUI(){
     endBtn.disabled=!showEnd;
   }
   if(!can){
-    $('hint').textContent='';
+    _setT('hint','');
   }else if(!playerHasAction()){
-    $('hint').textContent='No moves left. End turn.';
+    _setT('hint','No moves left. End turn.');
   }else if(mode==='PLACE'&&canPlace){
-    $('hint').textContent='Tap an empty square to place a stone (costs '+PLACE_COST+' rotation budget).';
+    _setT('hint','Tap an empty square to place a stone (costs '+PLACE_COST+' rotation budget).');
   }else if(mode==='MARK'&&canMark){
-    $('hint').textContent='Convert a CPU mark (uses one stored mark).';
+    _setT('hint','Convert a CPU mark (uses one stored mark).');
   }else if(mode==='ROTATE'&&canRot){
-    $('hint').textContent=rotatedThisTurn?'Rotate more, or end turn.':'Drag a face to rotate.';
+    _setT('hint',rotatedThisTurn?'Rotate more, or end turn.':'Drag a face to rotate.');
   }else if(markLeft<=0){
-    $('hint').textContent='No marks left. Rotate only.';
+    _setT('hint','No marks left. Rotate only.');
   }else{
-    $('hint').textContent='No rotates left. Place a mark.';
+    _setT('hint','No rotates left. Place a mark.');
   }
   const setStat=(id,label,n,lowAt)=>{
     const el=$(id);if(!el)return;
@@ -1444,10 +1473,49 @@ function finishMove(who){
     if(!playerHasAction())setTimeout(()=>endPlayerTurn(true),300);
   }
 }
+/* CPUの思考を別スレッド(Web Worker)で行い、描画やカメラを止めない。
+   ワーカーは本体スクリプトの思考部分(PART 1・2)をそのまま使う */
+let cpuWorker=null,cpuWorkerTried=false;
+function getCpuWorker(){
+  if(cpuWorkerTried)return cpuWorker;
+  cpuWorkerTried=true;
+  try{
+    const src=document.getElementById('main').textContent;
+    const from=src.indexOf('const AX=');
+    const to=src.lastIndexOf('/* =====',src.indexOf('PART 3 : VIEW'));
+    const body=src.slice(from,to);
+    const code="let markStock=[0,0,0],turnStart=[null,[],[]];\n"
+      +"const PLACE_COST=10,PLAN_BONUS=900;\n"+body+"\n"
+      +"onmessage=e=>{const d=e.data;markStock=d.ms;turnStart=d.ts;"
+      +"postMessage(chooseIter(d.b,d.me,d.Q,d.rt,d.P,Math.random,d.ls,d.win,d.markOK))};";
+    cpuWorker=new Worker(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+  }catch(e){cpuWorker=null}
+  return cpuWorker;
+}
+function askCpu(args){
+  const [b,me,Q,rt,P,ls,win,markOK]=args;
+  const local=()=>Promise.resolve(chooseIter(b,me,Q,rt,P,Math.random,ls,win,markOK));
+  const w=getCpuWorker();
+  if(!w)return local();
+  return new Promise(res=>{
+    let done=false;
+    w.onmessage=e=>{if(!done){done=true;res(e.data)}};
+    w.onerror=()=>{if(!done){done=true;cpuWorker=null;cpuWorkerTried=true;res(chooseIter(b,me,Q,rt,P,Math.random,ls,win,markOK))}};
+    w.postMessage({b,me,Q,rt,P,ls,win,markOK,ms:markStock,ts:turnStart});
+  });
+}
+/* カメラが目標の面へ寄り終わるまで次の回転を待つ(移動中に回転が重なると、カメラがかくつくため)。
+   待ち時間には上限を設けて、止まり続けないようにする */
+function waitCamIdle(cb,t0){
+  const start=t0===undefined?performance.now():t0;
+  if((camGoal||pendingGoal)&&performance.now()-start<1500){setTimeout(()=>waitCamIdle(cb,start),40);return}
+  cb();
+}
 function cpuTurn(){
   if(state!=='cpu'||playMode!=='cpu')return;
   state='busy';lastWho=1;setUI();
-  cpuStep(0,false);
+  // 先に1フレーム描画させてから思考する(カメラの動きが止まって見えないように)
+  requestAnimationFrame(()=>setTimeout(()=>cpuStep(0,false),0));
 }
 function cpuStep(n,win,marked){
   const o0=gameResult();
@@ -1455,7 +1523,10 @@ function cpuStep(n,win,marked){
   const P=LEVELS[level]||LEVELS.EASY;
   const b=boardNow();
   cpuMarkWindow=!!win;
-  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random,lineStateForCpu(),!!win,markStock[2]>0&&!marked);
+  askCpu([b,2,[0,playerPool,cpuPool],n,P,lineStateForCpu(),!!win,markStock[2]>0&&!marked]).then(a=>cpuAct(a,n,win,marked));
+}
+function cpuAct(a,n,win,marked){
+  if(state!=='busy'||playMode!=='cpu')return;
   if(a.type==='end'){cpuMarkWindow=false;setTimeout(()=>finishMove(2),200);return}
   if(a.type==='place'){
     const before=formedKeys(boardNow(),2);
@@ -1477,11 +1548,11 @@ function cpuStep(n,win,marked){
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
     const r=ROTS[a.r];focusLayer(r.axis,r.layer);setOppHLLayer(r.axis,r.layer);
     const before=formedKeys(boardNow(),2);
-    startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
+    waitCamIdle(()=>startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
       const formed=formedKeys(boardNow(),2).some(k=>!before.includes(k));
       if(formed)focusLine(newLineOf(before,2));
       cpuStep(n+1,formed,marked);   // 揃ったら回転はできない(MARKか終了のみ)。揃わなければ続けて考える
-    },120));
+    },320)));   // 回転の減衰を見せるための間(次の回転までに一呼吸)
   }
 }
 /* ステッカーが盤面のどのマス(0..53)か */
@@ -1496,7 +1567,6 @@ function doPlayerPlace(st){
   const i=slotOfSticker(st);
   st.owner=1;st.mt=performance.now();SND.ui();
   if(playMode==='pvp')netSend({type:'place',i});
-  focusLine(findNewLine(before));
   setUI();
   setTimeout(()=>{if(playMode==='pvp')netSend({type:'end'});finishMove(1)},300);
 }
@@ -1510,7 +1580,7 @@ function doPlayerMark(st){
   // find slot index for net sync
   let slot=-1;const map=stickerMap();
   for(let i=0;i<NCELL;i++)if(map[i]===st){slot=i;break}
-  st.owner=1;st.mt=performance.now();SND.mark();setUI();focusLine(findNewLine(before));
+  st.owner=1;st.mt=performance.now();SND.mark();setUI();
   if(playMode==='pvp')netSend({type:'mark',i:slot});
   markedThisTurn=true;   // 1ターン1回。ただし、この後も回転やターン終了はできる
   setTimeout(()=>{
@@ -1534,7 +1604,6 @@ function doPlayerRot(r){
     const nl=findNewLine(before);
     rotLockTurn=!!nl;          // 回転でラインが揃ったら、このターンの回転は終わり
     markWindow=false;          // 揃った直後のMARKは廃止(累積分のみ)
-    focusLine(nl);
     state='player';
     setUI();
   });
@@ -1774,6 +1843,7 @@ let prev=performance.now();
 function loop(now){
   const dt=Math.min(50,now-prev);prev=now;
   if(state==='title'&&!(down&&down.mode))userView=orth(mulM(rotM(1,dt*.0004),userView));
+  applyInertia(dt);
   followCam(dt);
   updateAnim(now);
   draw(now);
