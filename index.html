@@ -173,28 +173,29 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
   <div id="bar">
     <button id="back" class="btn sm">BACK</button>
     <div class="r">
-      <button id="undo" class="btn sm" disabled>UNDO</button>
+      <button id="undo" class="btn sm" disabled aria-label="undo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><polyline points="3 3 3 9 9 9"/></svg></button>
       <button id="snd" class="btn sm">SOUND ON</button>
     </div>
   </div>
   <div id="hud">
+    <div id="roundTop" style="position:fixed;top:10px;left:50%;transform:translateX(-50%);font-weight:700;letter-spacing:.12em;pointer-events:none;z-index:5">ROUND 1</div>
     <div id="turn">YOUR TURN</div>
     <div id="modes">
       <button id="mMark" class="on">MARK</button>
       <button id="mRot">ROTATE</button>
     </div>
     <button id="mEnd" class="end-btn hidden">END TURN</button>
-    <div id="hint">Place your mark.</div>
+    <div id="hint">Convert a CPU mark.</div>
     <div id="legend">
       <div class="row">
         <span class="who you">YOU</span>
-        <span class="stat" id="pRound">ROUND 1</span>
+        <span class="stat" id="pRound">LINE 0</span>
         <span class="stat" id="pMarks">MARK 7</span>
         <span class="stat" id="pRots">ROTATE 30</span>
       </div>
       <div class="row">
         <span class="who cpu">CPU</span>
-        <span class="stat" id="cRound">ROUND 1</span>
+        <span class="stat" id="cRound">LINE 0</span>
         <span class="stat" id="cMarks">MARK 9</span>
         <span class="stat" id="cRots">ROTATE 30</span>
       </div>
@@ -323,23 +324,16 @@ function applyMove(b,m,who){
    PART 2 : CPU (pure, see chooseIter)
    ===================================================== */
 const LEVELS={
-  EASY:   {depth:1, noise:2.4,  cap:4, W:{mark:54,rot:18}, budgetMs:0,    mistakesPerGame:0},
-  NORMAL: {depth:2, noise:0.8,  cap:4, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
-  HARD:   {depth:3, noise:0.15, cap:4, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
-  PERFECT:{depth:6, noise:0,    cap:4, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
+  EASY:   {depth:1, noise:2.4,  cap:54, W:{mark:54,rot:18}, budgetMs:0,    mistakesPerGame:0},
+  NORMAL: {depth:2, noise:0.8,  cap:54, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
+  HARD:   {depth:3, noise:0.15, cap:54, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
+  PERFECT:{depth:6, noise:0,    cap:54, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
 };
 let mistakesLeft=0;
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-/* ===== CPU ENGINE (pure) ===== */
-const COST={mark:2,rot:1};          // マーク=2, 回転=1
-const POOL_START=30;                 // 各陣営の上限コスト
+/* ===== CPU ENGINE (刷新版: 回転=予算, マーク=ライン完成で獲得, 完成ライン数で判定) ===== */
+const COST={rot:1};
+const POOL_START=30;
+const ROT_PEN=150;
 function countThreats(b,who){
   let n=0;
   for(const l of LINES){
@@ -349,10 +343,43 @@ function countThreats(b,who){
   }
   return n;
 }
-const EVAL={reachW:150,multiW:90,rotCost:40};
-function leafEval(b){
-  const r2=countThreats(b,2),r1=countThreats(b,1);
-  return EVAL.reachW*(r2*0.7-r1)+EVAL.multiW*(Math.max(0,r2-1)*0.7-Math.max(0,r1-1));
+function addLines(ls,b){
+  let n=null;
+  for(let k=0;k<LINES.length;k++){
+    const l=LINES[k],a=b[l[0]];
+    if((a===1||a===2)&&b[l[1]]===a&&b[l[2]]===a){
+      const idx=a-1;
+      if(!ls[idx][k]){ if(!n)n=[ls[0].slice(),ls[1].slice()]; n[idx][k]=1; }
+    }
+  }
+  return n||ls;
+}
+function lineN(u){let c=0;for(let i=0;i<u.length;i++)c+=u[i];return c}
+/* 新たに完成したライン数の分だけ、マークの獲得数を増やす */
+function earn(Mk,ls,kl){
+  return [0,Mk[1]+lineN(kl[0])-lineN(ls[0]),Mk[2]+lineN(kl[1])-lineN(ls[1])];
+}
+function finalValue(ls){return 1000*(lineN(ls[1])-lineN(ls[0]))}
+function openLines(b,who){
+  let n=0;
+  for(const l of LINES){
+    let mine=0,opp=0;
+    for(const i of l){ if(b[i]===who)mine++; else if(b[i]!==0)opp++; }
+    if(mine>0&&opp===0)n++;
+  }
+  return n;
+}
+/* 回転の罰則: 盤面の評価(完成ライン・リーチ・見込み)が良くなる回転は罰則なし。
+   何も進まない回転だけ罰則を付ける。複数回転でも、ライン完成や作る道筋があれば許可 */
+function rotPen(b,ls,nb,kl,side){
+  const d=leafEval(nb,kl)-leafEval(b,ls);
+  const good=side===2?d>0:d<0;
+  return good?0:(side===2?-ROT_PEN:ROT_PEN);
+}
+function leafEval(b,ls){
+  return 1000*(lineN(ls[1])-lineN(ls[0]))
+    +100*(countThreats(b,2)-countThreats(b,1))
+    +80*(openLines(b,2)-openLines(b,1));
 }
 function winCells(b,who){
   const out=[];
@@ -363,24 +390,36 @@ function winCells(b,who){
   }
   return out;
 }
-/* Q=[_,先手の残コスト,後手の残コスト]。rt=今ターンの回転数, cap=1ターンの回転上限 */
-function kidsOf(b,side,Q,rt,cap,W){
+/* Q=[_,先手の残予算,後手の残予算](回転), Mk=[_,先手のマーク残数,後手のマーク残数] */
+function affinity(b,i,side){
+  let n=0;
+  for(const l of LINES){if(!l.includes(i))continue;for(const j of l)if(b[j]===side)n++;}
+  return n;
+}
+/* 相手のリーチ(相手2つ+空き1)に含まれるiの数 */
+function breaks(b,i,opp){
+  let n=0;
+  for(const l of LINES){
+    if(!l.includes(i))continue;
+    let o=0,e=0,m=0;for(const j of l){if(b[j]===opp)o++;else if(b[j]===0)e++;else m++}
+    if(o===2&&e===1&&m===0)n++;
+  }
+  return n;
+}
+function kidsOf(b,side,Q,Mk,rt,cap,W){
   const kids=[];
-  if(rt===0&&Q[side]>=COST.mark){
-    const oppW=new Set(winCells(b,3-side)),ownW=new Set(winCells(b,side));
+  if(rt===0&&Mk[side]>0){
+    // マーク=相手の駒を自分の駒に変える。自分の線を作る/相手のリーチを崩す駒を優先
     const arr=[];
-    for(let i=0;i<NCELL;i++)if(b[i]===0)
-      arr.push({i,pre:ownW.has(i)?1000:oppW.has(i)?900:LINE_COUNT[i]});
+    for(let i=0;i<NCELL;i++)if(b[i]===3-side)
+      arr.push({i,pre:affinity(b,i,side)*10+breaks(b,i,3-side)*50});
     arr.sort((x,y)=>y.pre-x.pre||x.i-y.i);
     for(const c of arr.slice(0,W.mark)){const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});}
   }
   if(Q[side]>=COST.rot&&rt<cap){
-    // 案1: 回転は相手のリーチ(阻止対象)を減らす場合だけ許可
-    const oppBefore=countThreats(b,3-side);
     for(let r=0;r<ROTS.length;r++){
       const nb=rotBoard(b,ROTS[r]);
       if(nb.every((v,i)=>v===b[i]))continue;
-
       kids.push({t:1,r,nb});
     }
   }
@@ -388,47 +427,56 @@ function kidsOf(b,side,Q,rt,cap,W){
 }
 const ABORT={};
 const SRCH={dl:Infinity,n:0};
-function sMinimax(b,side,Q,rt,depth,alpha,beta,P){
+function stoneCounts(b){let a=0,c=0;for(const x of b){if(x===1)a++;else if(x===2)c++}return [a,c]}
+function sMinimax(b,side,Q,Mk,rt,depth,alpha,beta,P,ls){
   if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT;
-  const o=outcome(b);
-  if(o==='C')return 1e6+depth;
-  if(o==='P')return -1e6-depth;
-  if(o==='D')return 0;
-  if(depth<=0)return leafEval(b);
+  {const [a,c]=stoneCounts(b);
+   if(a<=3||c<=3){const v=(a<=3&&c<=3)?0:(a<=3?1e6:-1e6);return v+depth*0.001}}
+  if(Q[1]<=0||Q[2]<=0)return finalValue(addLines(ls,b))+depth*0.001;
+  if(depth<=0)return leafEval(b,ls);
   const maxing=side===2;
-  let kids=kidsOf(b,side,Q,rt,P.cap,P.W);
-  const pen=maxing?EVAL.rotCost:-EVAL.rotCost;
-  for(const k of kids)k.v=leafEval(k.nb)-(k.t===1?pen:0);
+  let kids=kidsOf(b,side,Q,Mk,rt,P.cap,P.W);
+  for(const k of kids){
+    if(k.t===0){const M1=Mk.slice();M1[side]-=1;k.ls=addLines(ls,k.nb);k.Mk=earn(M1,ls,k.ls);}
+    else{k.ls=ls;k.Mk=Mk;}   // 回転中はライン換算しない(ターン終了時に換算)
+    k.pen=k.t===1?rotPen(b,ls,k.nb,k.ls,side):0;
+    k.v=leafEval(k.nb,k.ls)+k.pen;
+  }
   kids.sort((x,y)=>maxing?y.v-x.v:x.v-y.v);
   let rots=0;kids=kids.filter(k=>k.t===0||(++rots<=P.W.rot));
   let best=maxing?-Infinity:Infinity;
   for(const k of kids){
     let v;
-    if(k.t===0){const Q2=Q.slice();Q2[side]-=COST.mark;v=sMinimax(k.nb,3-side,Q2,0,depth-1,alpha,beta,P);}
-    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,rt+1,depth-1,alpha,beta,P)-pen;}
+    if(k.t===0){v=sMinimax(k.nb,3-side,Q,k.Mk,0,depth-1,alpha,beta,P,k.ls);}
+    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,k.Mk,rt+1,depth-1,alpha,beta,P,k.ls)+k.pen;}
     if(maxing){if(v>best)best=v;if(best>alpha)alpha=best;}
     else{if(v<best)best=v;if(best<beta)beta=best;}
     if(beta<=alpha)break;
   }
   if(rt>0&&beta>alpha){
-    const v=sMinimax(b,3-side,Q,0,depth-1,alpha,beta,P);
+    const kl=addLines(ls,b),Mk2=earn(Mk,ls,kl);
+    const v=sMinimax(b,3-side,Q,Mk2,0,depth-1,alpha,beta,P,kl);
     if(maxing){if(v>best)best=v;}else{if(v<best)best=v;}
   }
-  if(best===Infinity||best===-Infinity)return leafEval(b);
+  if(best===Infinity||best===-Infinity)return leafEval(b,ls);
   return best;
 }
-function chooseAction(b,me,Q,rt,P,rng){
+function chooseAction(b,me,Q,Mk,rt,P,rng,ls){
   const RW={mark:NCELL,rot:ROTS.length};
   const opt=[];
-  const pen=me===2?EVAL.rotCost:-EVAL.rotCost;
-  for(const k of kidsOf(b,me,Q,rt,P.cap,RW)){
+  for(const k of kidsOf(b,me,Q,Mk,rt,P.cap,RW)){
+    // マークはターンを終えるので換算する。回転中は換算しない
+    let kl=ls,Mk2=Mk;
+    if(k.t===0){const M1=Mk.slice();M1[me]-=1;kl=addLines(ls,k.nb);Mk2=earn(M1,ls,kl);}
     let v;
-    if(k.t===0){const Q2=Q.slice();Q2[me]-=COST.mark;v=sMinimax(k.nb,3-me,Q2,0,P.depth-1,-Infinity,Infinity,P);}
-    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,rt+1,P.depth-1,-Infinity,Infinity,P)-pen;}
+    if(k.t===0){v=sMinimax(k.nb,3-me,Q,Mk2,0,P.depth-1,-Infinity,Infinity,P,kl);}
+    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,Mk2,rt+1,P.depth-1,-Infinity,Infinity,P,kl)+rotPen(b,ls,k.nb,kl,me);}
     opt.push({a:k.t===0?{type:'mark',i:k.i}:{type:'rot',r:k.r},v,t:k.t});
   }
   if(rt>0){
-    const v=sMinimax(b,3-me,Q,0,P.depth-1,-Infinity,Infinity,P);
+    // END TURN時に盤面のラインを換算
+    const kl=addLines(ls,b),Mk2=earn(Mk,ls,kl);
+    const v=sMinimax(b,3-me,Q,Mk2,0,P.depth-1,-Infinity,Infinity,P,kl);
     opt.push({a:{type:'end'},v,t:2});
   }
   if(!opt.length)return {type:'end'};
@@ -437,11 +485,12 @@ function chooseAction(b,me,Q,rt,P,rng){
   opt.sort((x,y)=>y.score-x.score||(x.t-y.t));
   return opt[0].a;
 }
-function chooseIter(b,me,Q,rt,P,rng){
+function chooseIter(b,me,Q,Mk,rt,P,rng,ls){
+  if(!ls)ls=addLines([new Uint8Array(LINES.length),new Uint8Array(LINES.length)],b);
   let best=null;
   SRCH.dl=P.budgetMs?Date.now()+P.budgetMs:Infinity;
   for(let d=1;d<=P.depth;d++){
-    try{best=chooseAction(b,me,Q,rt,Object.assign({},P,{depth:d}),rng)}
+    try{best=chooseAction(b,me,Q,Mk,rt,Object.assign({},P,{depth:d}),rng,ls)}
     catch(e){if(e===ABORT)break;throw e}
   }
   return best||{type:'end'};
@@ -477,6 +526,30 @@ addEventListener('resize',resize);
 const ACC='#e5322d',BODY='#262626';
 const TINT=['#dedede','#cdcdcd','#e9e9e9','#c2c2c2','#d6d6d6','#bbbbbb'];
 let cubies=[];
+let stoneSeed=null;   // オンライン対戦では、ホストが決めた値を両者で共有する
+function seededRng(seed){
+  let a=seed>>>0;
+  return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296};
+}
+function placeStones(){
+  const all=cubies.flatMap(c=>c.st);
+  const rng=stoneSeed===null?Math.random:seededRng(stoneSeed);
+  const swap=playMode==='pvp'&&!isHost;   // 表示上の「1=自分」に合わせ、ゲスト側は所有者を入れ替える
+  for(let tries=0;tries<1000;tries++){
+    all.forEach(st=>{st.owner=0;st.mt=-1});
+    const idx=all.map((_,i)=>i).sort(()=>rng()-.5);
+    const A=swap?2:1,B=swap?1:2;
+    for(let k=0;k<9;k++)all[idx[k]].owner=A;
+    for(let k=9;k<18;k++)all[idx[k]].owner=B;
+    if(!scanCompleteLine())break;
+  }
+  all.forEach(st=>{st.mt=-1});
+}
+/* 盤面に揃ったラインが1つでもあればtrue(初期配置の検査用) */
+function scanCompleteLine(){
+  const b=boardNow();
+  return LINES.some(l=>{const a=b[l[0]];return a>0&&l.every(i=>b[i]===a)});
+}
 function resetCubies(){
   cubies=[];
   for(let i=0;i<27;i++){
@@ -513,17 +586,67 @@ resize(); // initial layout after state exists
 let mode='MARK';         // MARK | ROTATE (what YOU chose)
 let round=1,anim=null,hl=null,hoverSt=null,level='EASY';
 let playMode='cpu';       // cpu | pvp
-const POOL_MAX=30;       // 各陣営の上限コスト(マーク=2, 回転=1)
+const POOL_MAX=54;       // 各陣営の上限コスト(マーク=2, 回転=1)
 const MARK_COST=2, ROT_COST=1;
 let playerPool=POOL_MAX, cpuPool=POOL_MAX;
 let humanFirst=true;     // who opens the game (random each start)
 let markLeft=0,rotLeft=0,cpuMarkLeft=0,cpuRotLeft=0; // syncCounts() で導出
+/* 回転=予算(1消費)。マークは「ラインを完成させるたびに1回」獲得し、使うと1減る(累積可) */
 function syncCounts(){
-  markLeft=Math.floor(playerPool/MARK_COST);rotLeft=playerPool;
-  cpuMarkLeft=Math.floor(cpuPool/MARK_COST);cpuRotLeft=cpuPool;
+  rotLeft=playerPool;cpuRotLeft=cpuPool;
 }
 syncCounts();
-let passCount=0, turnNoAct=false;   // 何もできないターンが2連続したら引き分け
+let passCount=0, turnNoAct=false;
+let lineSets={1:new Set(),2:new Set()};  // 一度でも完成した各陣営のライン番号
+let lineRed={1:false,2:false};  // 直前に自分がラインを作った → 次の自分のターンまで赤表示
+let shuffling=false;
+let shuffleQueue=[];   // 新しいラインができたときの、ルービックキューブ式のランダム層回転
+/* 盤面で新しく完成したラインを記録。新規があればtrue */
+function scanLines(){
+  const b=boardNow();let added=false;
+  LINES.forEach((l,k)=>{
+    const a=b[l[0]];
+    if((a===1||a===2)&&l.every(i=>b[i]===a)){
+      if(!lineSets[a].has(k)){lineRed[a]=true;added=true;if(a===1)markLeft++;else cpuMarkLeft++}
+      lineSets[a].add(k);
+    }
+  });
+  return added;
+}
+/* 新しいラインができたら、縦横の層回転をランダムに数回行う(実際のキューブ操作と同じ) */
+function makeShuffleTurns(){
+  const pa=Math.max(playerPool,cpuPool),pb=Math.min(playerPool,cpuPool);
+  const la=lineSets[1].size+lineSets[2].size;
+  let seed=((pa*131+pb)*197+la*31+round*13+1)>>>0;
+  const rnd=()=>{seed^=seed<<13;seed>>>=0;seed^=seed>>>17;seed^=seed<<5;seed>>>=0;return seed/4294967296};
+  const turns=[];let prev=null;
+  for(let k=0;k<SHUFFLE_TURNS;k++){
+    let r;
+    do{r=ROTS[Math.floor(rnd()*ROTS.length)]}while(prev&&prev.axis===r.axis&&prev.layer===r.layer);
+    turns.push(r);prev=r;
+  }
+  return turns;
+}
+const SHUFFLE_TURNS=8, SHUFFLE_MS=110;
+function updateLines(){scanLines()}
+/* シャッフル中は、キューブの層を一つずつ回す(アニメーションの空きに順番に実行) */
+function stepShuffle(){
+  if(anim||!shuffleQueue.length)return;
+  const t=shuffleQueue.shift();
+  startRot(t.axis,t.layer,t.dir,()=>{
+    if(!shuffleQueue.length){shuffling=false;scanLines();setUI()}
+  },SHUFFLE_MS);
+}
+/* 今、盤面で完成しているラインのステッカー */
+function formedStickers(){
+  const b=boardNow(),map=stickerMap(),set=new Set();
+  for(const l of LINES){
+    const a=b[l[0]];
+    if((a===1||a===2)&&l.every(i=>b[i]===a))l.forEach(i=>set.add(map[i]));
+  }
+  return set;
+}
+function lineCount(who){return lineSets[who].size}   // 何もできないターンが2連続したら引き分け
 let rotatedThisTurn=false; // true after at least one rotate this turn
 let turnHist=[];           // undo stack for CURRENT turn only (rotates)
 let hits=[];
@@ -594,7 +717,7 @@ function bootGameFromNet(asHost,hostIsFirst){
   const cl=document.querySelector('#legend .who.cpu'),yl=document.querySelector('#legend .who.you');
   if(cl)cl.textContent=oppTag();
   if(yl)yl.textContent=myTag();
-  resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
+  resetCubies();placeStones();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
   rotatedThisTurn=false;clearTurnHist();userView=frontView();
   document.getElementById('result').classList.add('hidden');
   ['turn','modes','hint','legend'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
@@ -604,6 +727,7 @@ function onNetData(msg){
   if(!msg||!msg.type)return;
   if(msg.type==='start'){
     oppName=(msg.hostName||'').slice(0,8);
+    stoneSeed=(msg.seed===undefined)?null:(msg.seed>>>0);
     bootGameFromNet(false,!!msg.hostIsFirst);
     return;
   }
@@ -616,22 +740,36 @@ function onNetData(msg){
   if(state==='title'||state==='over')return;
   if(msg.type==='mark'){
     const st=stickerMap()[msg.i];
-    if(!st||st.owner!==0)return;
-    state='busy';
-    cpuPool=Math.max(0,cpuPool-MARK_COST);syncCounts();
+    if(!st||st.owner!==1)return;
+    state='busy';oppHist=[];
+    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
     st.owner=2;st.mt=performance.now();SND.mark();
     setTimeout(()=>finishMove(2),400);
   }else if(msg.type==='rot'){
+    // 相手の回転(手番はまだ終わらない)。UNDOで戻せるよう、直前の状態を記録
     state='busy';
+    oppHist.push({cpuPool,marks:[markLeft,cpuMarkLeft],lines:{1:[...lineSets[1]],2:[...lineSets[2]]}});
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
-    startRot(msg.axis,msg.layer,msg.dir,()=>setTimeout(()=>finishMove(2),120));
+    startRot(msg.axis,msg.layer,msg.dir,()=>setUI());
+  }else if(msg.type==='unrot'){
+    // 相手のUNDO: 直前の回転を逆向きに回し、記録も戻す
+    const h=oppHist.pop();
+    startRot(msg.axis,msg.layer,msg.dir,()=>{
+      if(h){
+        cpuPool=h.cpuPool;syncCounts();
+        markLeft=h.marks[0];cpuMarkLeft=h.marks[1];
+        lineSets={1:new Set(h.lines[1]),2:new Set(h.lines[2])};
+      }
+      setUI();
+    },UNDO_MS);
   }else if(msg.type==='end'){
-    state='busy';turnNoAct=false;
+    state='busy';turnNoAct=false;oppHist=[];
     setTimeout(()=>finishMove(2),200);
   }
 }
+let oppHist=[];   // 相手の回転ごとの記録(相手のUNDOに対応するため)
 function assignSeatsFromFlags(){
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;lineSets={1:new Set(),2:new Set()};lineRed={1:false,2:false};markLeft=0;cpuMarkLeft=0;
 }
 function genRoomCode(){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -641,8 +779,9 @@ function genRoomCode(){
 function hostStartGame(){
   const hostIsFirst=Math.random()<0.5;
   startSent=true;
+  stoneSeed=(Math.random()*4294967296)>>>0;
   setNetWait(true,'STARTING…',roomCode);
-  netSend({type:'start',hostIsFirst,hostName:myName()});
+  netSend({type:'start',hostIsFirst,hostName:myName(),seed:stoneSeed});
   setTimeout(()=>bootGameFromNet(true,hostIsFirst),120);
 }
 function makePeer(id){
@@ -868,10 +1007,12 @@ function cloneCubies(){
   }));
 }
 /* Snapshot before a rotate within the current turn */
-function pushTurnHist(){
+function pushTurnHist(r){
   turnHist.push({
+    rot:{axis:r.axis,layer:r.layer,dir:r.dir},
     cubies:cloneCubies(),
-    playerPool,rotatedThisTurn,mode
+    playerPool,rotatedThisTurn,mode,
+    lines:{1:[...lineSets[1]],2:[...lineSets[2]]},marks:[markLeft,cpuMarkLeft]
   });
 }
 function clearTurnHist(){turnHist=[];}
@@ -881,14 +1022,22 @@ function canUndo(){
 function doUndo(){
   if(!canUndo())return;
   const s=turnHist.pop();
-  cubies=s.cubies;
-  playerPool=s.playerPool;syncCounts();
-  rotatedThisTurn=s.rotatedThisTurn;
-  mode=s.mode;
-  hl=null;anim=null;hoverSt=null;
-  setUI();
-  SND.ui();
+  state='busy';hoverSt=null;hl=null;setUI();
+  // 直前の回転を逆向きに回して戻す(キューブを実際に回す演出)
+  if(playMode==='pvp')netSend({type:'unrot',axis:s.rot.axis,layer:s.rot.layer,dir:-s.rot.dir});
+  startRot(s.rot.axis,s.rot.layer,-s.rot.dir,()=>{
+    cubies=s.cubies;
+    playerPool=s.playerPool;syncCounts();
+    lineSets={1:new Set(s.lines[1]),2:new Set(s.lines[2])};
+    markLeft=s.marks[0];cpuMarkLeft=s.marks[1];
+    rotatedThisTurn=s.rotatedThisTurn;
+    mode=s.mode;
+    state='player';
+    setUI();
+    SND.ui();
+  },UNDO_MS);
 }
+const UNDO_MS=300;
 
 /* ---------- sound ---------- */
 let AC=null,soundOn=true;
@@ -975,6 +1124,7 @@ function draw(now){
   faces.sort((a,b)=>b.dist-a.dist);
   hits=[];
   const pulse=.5+.5*Math.sin(now/170);
+  const formed=formedStickers();
   for(const f of faces){
     poly(quad(f.fc,f.u,f.v,.5),BODY,BODY,1.2);
     const st=f.st;
@@ -982,14 +1132,16 @@ function draw(now){
     const off=[f.nw[0]*.003,f.nw[1]*.003,f.nw[2]*.003];
     const sp=quad(f.fc,f.u,f.v,.43,off);
     const win=hl&&hl.has(st);
+    const ow=st.owner;
     let fill=st.tint,mc='#000';
-    if(st.owner===1){fill='#fff';mc='#000'}
-    else if(st.owner===2){fill='#050505';mc='#fff'}
+    if(ow===1){fill='#fff';mc='#000'}
+    else if(ow===2){fill='#050505';mc='#fff'}
     if(win){fill=pulse>.5?ACC:'#c42a25';mc='#fff'}
-    poly(sp,fill,st.owner===2&&!win?'#4a4a4a':null,1.5);
-    if(st.owner>0){
+    else if(formed&&formed.has(st)){fill='#c42a25';mc='#fff'}
+    poly(sp,fill,ow===2&&!win?'#4a4a4a':null,1.5);
+    if(ow>0){
       const prog=st.mt<0?1:easeBack(clamp((now-st.mt)/300,0,1));
-      glyph(st.owner,f.fc,f.u,f.v,f.nw,Math.max(.01,prog),mc);
+      glyph(ow,f.fc,f.u,f.v,f.nw,Math.max(.01,prog),mc);
     }else if(hoverSt===st&&mode==='MARK'&&markLeft>0&&state==='player'&&!anim){
       ctx.globalAlpha=.4;glyph(1,f.fc,f.u,f.v,f.nw,1,'#000');ctx.globalAlpha=1;
     }
@@ -1010,12 +1162,12 @@ function hitTest(x,y){
 }
 
 /* ---------- rotation animation ---------- */
-function startRot(axis,layer,dir,done){
-  anim={axis,layer,dir,t0:performance.now(),dur:430,ang:0,done};
+function startRot(axis,layer,dir,done,dur=430){
+  anim={axis,layer,dir,t0:performance.now(),dur,ang:0,done};
   SND.rot();
 }
 function updateAnim(now){
-  if(!anim)return;
+  if(!anim){stepShuffle();return}
   const t=clamp((now-anim.t0)/anim.dur,0,1);
   anim.ang=anim.dir*(Math.PI/2)*ease(t);
   if(t>=1){
@@ -1050,7 +1202,7 @@ function setUI(){
   if(youWho)youWho.textContent=myTag();
   const can=state==='player';
   const canMark=can&&markLeft>0&&!rotatedThisTurn;
-  const canRot=can&&playerRotOK();
+  const canRot=can&&playerRotOK()&&!shuffling;
   // auto-switch mode when current choice is exhausted
   if(can&&mode==='MARK'&&!canMark&&canRot)mode='ROTATE';
   if(can&&mode==='ROTATE'&&!canRot&&canMark)mode='MARK';
@@ -1070,7 +1222,7 @@ function setUI(){
   }else if(!playerHasAction()){
     $('hint').textContent='No moves left. End turn.';
   }else if(mode==='MARK'&&canMark){
-    $('hint').textContent=rotatedThisTurn?'Place your mark, or end turn.':'Place your mark.';
+    $('hint').textContent=rotatedThisTurn?'Convert a CPU mark, or end turn.':'Convert a CPU mark.';
   }else if(mode==='ROTATE'&&canRot){
     $('hint').textContent=rotatedThisTurn?'Rotate more, or end turn.':'Drag a face to rotate.';
   }else if(markLeft<=0){
@@ -1083,8 +1235,11 @@ function setUI(){
     el.textContent=label+' '+n;
     el.classList.toggle('low',n<=lowAt);
   };
-  setStat('pRound','ROUND',round,0);
-  setStat('cRound','ROUND',round,0);
+  const rt=$('roundTop');if(rt)rt.textContent='ROUND '+round;
+  setStat('pRound','LINE',lineCount(1),-1);
+  setStat('cRound','LINE',lineCount(2),-1);
+  $('pRound').style.color=lineRed[1]?'#c42a25':'';
+  $('cRound').style.color=lineRed[2]?'#c42a25':'';
   setStat('pMarks','MARK',markLeft,2);
   setStat('cMarks','MARK',cpuMarkLeft,2);
   setStat('pRots','ROTATE',rotLeft,5);
@@ -1093,13 +1248,32 @@ function setUI(){
   if(undoBtn)undoBtn.disabled=!canUndo();
   cv.style.cursor=can?(mode==='MARK'&&canMark?'default':(mode==='ROTATE'&&canRot?'grab':'default')):'default';
 }
+/* 案4: どちらかの予算が0になった時点で終了。勝敗は完成ライン数(多い方が勝ち) */
+/* 盤面で完成したラインの履歴をエンジン用の形式に変換 */
+function lineStateForCpu(){
+  const ls=[new Uint8Array(LINES.length),new Uint8Array(LINES.length)];
+  for(const k of lineSets[1])ls[0][k]=1;
+  for(const k of lineSets[2])ls[1][k]=1;
+  return ls;
+}
+function gameResult(){
+  const b=boardNow();
+  let n1=0,n2=0;for(const x of b){if(x===1)n1++;else if(x===2)n2++}
+  const lose1=n1<=3,lose2=n2<=3;
+  if(lose1||lose2)return lose1&&lose2?'D':lose1?'C':'P';
+  if(playerPool>0&&cpuPool>0)return null;
+  const l1=lineCount(1),l2=lineCount(2);
+  return l1>l2?'P':l2>l1?'C':'D';
+}
 function finishMove(who){
+  if(shuffling){setTimeout(()=>finishMove(who),60);return}   // シャッフルが終わるまで待つ
   lastWho=who;
   clearTurnHist();
-  const b=boardNow(),o=outcome(b);
+  updateLines();
+  lineRed[3-who]=false;   // 次に手番が来る側の赤表示を解除
+  const b=boardNow(),o=gameResult();
   if(o){endGame(o,b);return}
-  passCount=turnNoAct?passCount+1:0;turnNoAct=false;
-  if(passCount>=2){endGame('D',b);return}
+
   if(who===1){
     if(!humanFirst)round++;
     state='cpu';rotatedThisTurn=false;setUI();
@@ -1121,11 +1295,11 @@ function cpuTurn(){
 function cpuStep(n){
   const P=LEVELS[level]||LEVELS.EASY;
   const b=boardNow();
-  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random);
+  const a=chooseIter(b,2,[0,playerPool,cpuPool],[0,markLeft,cpuMarkLeft],n,P,Math.random,lineStateForCpu());
   if(a.type==='end'){turnNoAct=(n===0);setTimeout(()=>finishMove(2),200);return}
   turnNoAct=false;
   if(a.type==='mark'){
-    cpuPool=Math.max(0,cpuPool-MARK_COST);syncCounts();
+    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
     const st=stickerMap()[a.i];st.owner=2;st.mt=performance.now();SND.mark();
     setUI();
     setTimeout(()=>finishMove(2),420);
@@ -1133,16 +1307,15 @@ function cpuStep(n){
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
     const r=ROTS[a.r];
     startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
-      if(outcome(boardNow()))finishMove(2);
-      else cpuStep(n+1);
+      finishMove(2);
     },120));
   }
 }
 function doPlayerMark(st){
-  if(markLeft<=0||rotatedThisTurn)return;
+  if(markLeft<=0||rotatedThisTurn||st.owner!==2)return;
   clearTurnHist();
   state='busy';lastWho=2;
-  playerPool-=MARK_COST;syncCounts();
+  markLeft--;
   // find slot index for net sync
   let slot=-1;const map=stickerMap();
   for(let i=0;i<NCELL;i++)if(map[i]===st){slot=i;break}
@@ -1152,13 +1325,13 @@ function doPlayerMark(st){
 }
 function doPlayerRot(r){
   if(!blocksOpp(r,1))return;   // 相手のリーチを減らさない回転は不可
-  pushTurnHist();
+  pushTurnHist(r);
   state='busy';lastWho=2;setUI();
   playerPool-=ROT_COST;syncCounts();
   rotatedThisTurn=true;
   if(playMode==='pvp')netSend({type:'rot',axis:r.axis,layer:r.layer,dir:r.dir});
   startRot(r.axis,r.layer,r.dir,()=>{
-    const b=boardNow(),o=outcome(b);
+    const b=boardNow(),o=gameResult();
     if(o){endGame(o,b);return}
     state='player';
     setUI();
@@ -1196,10 +1369,11 @@ function endGame(o,b){
 
 function assignSeats(){
   humanFirst=Math.random()<0.5;
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;lineSets={1:new Set(),2:new Set()};lineRed={1:false,2:false};markLeft=0;cpuMarkLeft=0;
 }
 function beginPlay(){
   $('deal').classList.add('hidden');$('deal').classList.remove('show');
+
   if(humanFirst){
     state='player';lastWho=2;mode=markLeft>0?'MARK':'ROTATE';
     layoutCube();setUI();
@@ -1236,7 +1410,7 @@ function showDealThenStart(){
   },90);
 }
 function newGame(){
-  resetCubies();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
+  resetCubies();placeStones();hl=null;anim=null;round=1;mode='MARK';hoverSt=null;
   rotatedThisTurn=false;clearTurnHist();
   userView=frontView();
   const L=LEVELS[level]||LEVELS.EASY;
@@ -1250,7 +1424,7 @@ function newGame(){
 function toTitle(){
   netDestroy();
   playMode='cpu';
-  resetCubies();hl=null;anim=null;state='title';
+  resetCubies();placeStones();hl=null;anim=null;state='title';
   $('result').classList.add('hidden');
   $('deal').classList.add('hidden');$('deal').classList.remove('show');
   setNetWait(false);
@@ -1285,7 +1459,7 @@ function solveRot(h,d){
 
 /* ---------- pointer input ---------- */
 let down=null;
-const canAct=()=>state==='player'&&!anim;
+const canAct=()=>state==='player'&&!anim&&!shuffling;
 cv.addEventListener('pointerdown',e=>{
   cv.setPointerCapture(e.pointerId);
   if(state==='title'){down={mode:'orbit',lx:e.clientX,ly:e.clientY};return}
@@ -1294,7 +1468,7 @@ cv.addEventListener('pointerdown',e=>{
 cv.addEventListener('pointermove',e=>{
   if(!down){
     const h=hitTest(e.clientX,e.clientY);
-    hoverSt=(h&&h.st.owner===0&&markLeft>0&&!rotatedThisTurn)?h.st:null;
+    hoverSt=(h&&h.st.owner===2&&markLeft>0&&!rotatedThisTurn)?h.st:null;
     cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0&&!rotatedThisTurn?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
     return;
   }
@@ -1315,7 +1489,7 @@ cv.addEventListener('pointermove',e=>{
 cv.addEventListener('pointerup',e=>{
   if(down&&!down.mode&&mode==='MARK'&&markLeft>0&&!rotatedThisTurn&&canAct()){
     const h=hitTest(e.clientX,e.clientY);
-    if(h&&h.st.owner===0)doPlayerMark(h.st);
+    if(h&&h.st.owner===2)doPlayerMark(h.st);
   }
   down=null;
 });
@@ -1337,6 +1511,7 @@ $('lvEASY').onclick=()=>startCpu('EASY');
 $('lvNORMAL').onclick=()=>startCpu('NORMAL');
 $('lvHARD').onclick=()=>startCpu('HARD');
 $('lvMASTER').onclick=()=>startCpu('PERFECT');
+
 $('btnLocal').onclick=()=>{
   $('nickInput').classList.remove('hidden');
   $('btnOnlineStart').classList.add('hidden');
