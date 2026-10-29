@@ -327,13 +327,14 @@ const LEVELS={
   EASY:   {depth:1, noise:2.4,  cap:54, W:{mark:54,rot:18}, budgetMs:0,    mistakesPerGame:0},
   NORMAL: {depth:2, noise:0.8,  cap:54, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
   HARD:   {depth:3, noise:0.15, cap:54, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
-  PERFECT:{depth:6, noise:0,    cap:54, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
+  PERFECT:{depth:6, noise:0.3,    cap:54, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
 };
 let mistakesLeft=0;
 /* ===== CPU ENGINE (刷新版: 回転=予算, マーク=ライン完成で獲得, 完成ライン数で判定) ===== */
 const COST={rot:1};
 const POOL_START=30;
 const ROT_PEN=150;
+const ROT_TEMPO=150;   // 同じ評価なら回転の少ない手を選ぶための減点(ターン内の回転数に比例)
 function countThreats(b,who){
   let n=0;
   for(const l of LINES){
@@ -343,23 +344,22 @@ function countThreats(b,who){
   }
   return n;
 }
+/* 現在成立しているラインだけを返す(累計ではない) */
 function addLines(ls,b){
-  let n=null;
+  const n=[new Uint8Array(LINES.length),new Uint8Array(LINES.length)];
   for(let k=0;k<LINES.length;k++){
     const l=LINES[k],a=b[l[0]];
-    if((a===1||a===2)&&b[l[1]]===a&&b[l[2]]===a){
-      const idx=a-1;
-      if(!ls[idx][k]){ if(!n)n=[ls[0].slice(),ls[1].slice()]; n[idx][k]=1; }
-    }
+    if((a===1||a===2)&&b[l[1]]===a&&b[l[2]]===a)n[a-1][k]=1;
   }
-  return n||ls;
+  return n;
 }
+/* 盤面で今成立している、その陣営のライン数 */
+function boardLines(b,who){let c=0;for(const l of LINES)if(b[l[0]]===who&&b[l[1]]===who&&b[l[2]]===who)c++;return c}
 function lineN(u){let c=0;for(let i=0;i<u.length;i++)c+=u[i];return c}
-/* 新たに完成したライン数の分だけ、マークの獲得数を増やす */
-function earn(Mk,ls,kl){
-  return [0,Mk[1]+lineN(kl[0])-lineN(ls[0]),Mk[2]+lineN(kl[1])-lineN(ls[1])];
-}
-function finalValue(ls){return 1000*(lineN(ls[1])-lineN(ls[0]))}
+/* 駒数: [先手(1)の駒数, 後手(2)の駒数] */
+function stoneCountsOf(b){let a=0,c=0;for(const x of b){if(x===1)a++;else if(x===2)c++}return [a,c]}
+/* 終局評価: 駒の多い方が勝ち(CPU=2の視点で正の値が有利) */
+function finalValue(b){const [a,c]=stoneCountsOf(b);return 1000*(c-a)}
 function openLines(b,who){
   let n=0;
   for(const l of LINES){
@@ -390,7 +390,7 @@ function winCells(b,who){
   }
   return out;
 }
-/* Q=[_,先手の残予算,後手の残予算](回転), Mk=[_,先手のマーク残数,後手のマーク残数] */
+/* Q=[_,先手の残予算,後手の残予算](回転予算) */
 function affinity(b,i,side){
   let n=0;
   for(const l of LINES){if(!l.includes(i))continue;for(const j of l)if(b[j]===side)n++;}
@@ -406,10 +406,10 @@ function breaks(b,i,opp){
   }
   return n;
 }
-function kidsOf(b,side,Q,Mk,rt,cap,W){
+function kidsOf(b,side,Q,rt,cap,W){
   const kids=[];
-  if(rt===0&&Mk[side]>0){
-    // マーク=相手の駒を自分の駒に変える。自分の線を作る/相手のリーチを崩す駒を優先
+  // マーク: 自分のラインが1本以上あれば使える(ターンを終える)。自分の線を作る/相手のリーチを崩す駒を優先
+  if(boardLines(b,side)>0){
     const arr=[];
     for(let i=0;i<NCELL;i++)if(b[i]===3-side)
       arr.push({i,pre:affinity(b,i,side)*10+breaks(b,i,3-side)*50});
@@ -427,18 +427,16 @@ function kidsOf(b,side,Q,Mk,rt,cap,W){
 }
 const ABORT={};
 const SRCH={dl:Infinity,n:0};
-function stoneCounts(b){let a=0,c=0;for(const x of b){if(x===1)a++;else if(x===2)c++}return [a,c]}
-function sMinimax(b,side,Q,Mk,rt,depth,alpha,beta,P,ls){
+function sMinimax(b,side,Q,rt,depth,alpha,beta,P,ls){
   if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT;
-  {const [a,c]=stoneCounts(b);
-   if(a<=3||c<=3){const v=(a<=3&&c<=3)?0:(a<=3?1e6:-1e6);return v+depth*0.001}}
-  if(Q[1]<=0||Q[2]<=0)return finalValue(addLines(ls,b))+depth*0.001;
+  {const [a,c]=stoneCountsOf(b);
+   if(a<=3||c<=3){const v=(a<=3&&c<=3)?finalValue(b):(a<=3?-1e6:1e6);return v+depth*0.001}}
+  if(Q[1]<=0||Q[2]<=0)return finalValue(b)+depth*0.001;
   if(depth<=0)return leafEval(b,ls);
   const maxing=side===2;
-  let kids=kidsOf(b,side,Q,Mk,rt,P.cap,P.W);
+  let kids=kidsOf(b,side,Q,rt,P.cap,P.W);
   for(const k of kids){
-    if(k.t===0){const M1=Mk.slice();M1[side]-=1;k.ls=addLines(ls,k.nb);k.Mk=earn(M1,ls,k.ls);}
-    else{k.ls=ls;k.Mk=Mk;}   // 回転中はライン換算しない(ターン終了時に換算)
+    k.ls=k.t===0?addLines(ls,k.nb):ls;   // 回転中はライン換算しない(ターン終了時に換算)
     k.pen=k.t===1?rotPen(b,ls,k.nb,k.ls,side):0;
     k.v=leafEval(k.nb,k.ls)+k.pen;
   }
@@ -447,36 +445,34 @@ function sMinimax(b,side,Q,Mk,rt,depth,alpha,beta,P,ls){
   let best=maxing?-Infinity:Infinity;
   for(const k of kids){
     let v;
-    if(k.t===0){v=sMinimax(k.nb,3-side,Q,k.Mk,0,depth-1,alpha,beta,P,k.ls);}
-    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,k.Mk,rt+1,depth-1,alpha,beta,P,k.ls)+k.pen;}
+    if(k.t===0){v=sMinimax(k.nb,3-side,Q,0,depth-1,alpha,beta,P,k.ls);}
+    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,rt+1,depth-1,alpha,beta,P,k.ls)+k.pen;}
     if(maxing){if(v>best)best=v;if(best>alpha)alpha=best;}
     else{if(v<best)best=v;if(best<beta)beta=best;}
     if(beta<=alpha)break;
   }
   if(rt>0&&beta>alpha){
-    const kl=addLines(ls,b),Mk2=earn(Mk,ls,kl);
-    const v=sMinimax(b,3-side,Q,Mk2,0,depth-1,alpha,beta,P,kl);
+    const kl=addLines(ls,b);
+    const v=sMinimax(b,3-side,Q,0,depth-1,alpha,beta,P,kl);
     if(maxing){if(v>best)best=v;}else{if(v<best)best=v;}
   }
   if(best===Infinity||best===-Infinity)return leafEval(b,ls);
   return best;
 }
-function chooseAction(b,me,Q,Mk,rt,P,rng,ls){
+function chooseAction(b,me,Q,rt,P,rng,ls){
   const RW={mark:NCELL,rot:ROTS.length};
   const opt=[];
-  for(const k of kidsOf(b,me,Q,Mk,rt,P.cap,RW)){
-    // マークはターンを終えるので換算する。回転中は換算しない
-    let kl=ls,Mk2=Mk;
-    if(k.t===0){const M1=Mk.slice();M1[me]-=1;kl=addLines(ls,k.nb);Mk2=earn(M1,ls,kl);}
+  for(const k of kidsOf(b,me,Q,rt,P.cap,RW)){
+    const kl=k.t===0?addLines(ls,k.nb):ls;
     let v;
-    if(k.t===0){v=sMinimax(k.nb,3-me,Q,Mk2,0,P.depth-1,-Infinity,Infinity,P,kl);}
-    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,Mk2,rt+1,P.depth-1,-Infinity,Infinity,P,kl)+rotPen(b,ls,k.nb,kl,me);}
+    if(k.t===0){v=sMinimax(k.nb,3-me,Q,0,P.depth-1,-Infinity,Infinity,P,kl);}
+    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,rt+1,P.depth-1,-Infinity,Infinity,P,kl)+rotPen(b,ls,k.nb,kl,me);}
+    if(k.t===1)v-=(me===2?1:-1)*ROT_TEMPO*(rt+1);   // 評価の符号(陣営)に合わせて減点
     opt.push({a:k.t===0?{type:'mark',i:k.i}:{type:'rot',r:k.r},v,t:k.t});
   }
   if(rt>0){
-    // END TURN時に盤面のラインを換算
-    const kl=addLines(ls,b),Mk2=earn(Mk,ls,kl);
-    const v=sMinimax(b,3-me,Q,Mk2,0,P.depth-1,-Infinity,Infinity,P,kl);
+    const kl=addLines(ls,b);
+    const v=sMinimax(b,3-me,Q,0,P.depth-1,-Infinity,Infinity,P,kl);
     opt.push({a:{type:'end'},v,t:2});
   }
   if(!opt.length)return {type:'end'};
@@ -485,12 +481,12 @@ function chooseAction(b,me,Q,Mk,rt,P,rng,ls){
   opt.sort((x,y)=>y.score-x.score||(x.t-y.t));
   return opt[0].a;
 }
-function chooseIter(b,me,Q,Mk,rt,P,rng,ls){
+function chooseIter(b,me,Q,rt,P,rng,ls){
   if(!ls)ls=addLines([new Uint8Array(LINES.length),new Uint8Array(LINES.length)],b);
   let best=null;
   SRCH.dl=P.budgetMs?Date.now()+P.budgetMs:Infinity;
   for(let d=1;d<=P.depth;d++){
-    try{best=chooseAction(b,me,Q,Mk,rt,Object.assign({},P,{depth:d}),rng,ls)}
+    try{best=chooseAction(b,me,Q,rt,Object.assign({},P,{depth:d}),rng,ls)}
     catch(e){if(e===ABORT)break;throw e}
   }
   return best||{type:'end'};
@@ -533,14 +529,23 @@ function seededRng(seed){
 }
 function placeStones(){
   const all=cubies.flatMap(c=>c.st);
+  // 面の中央(その面の色を1つだけ持つステッカー)かどうか
+  const isCtr=cubies.flatMap(c=>c.st.map(()=>c.st.length===1));
   const rng=stoneSeed===null?Math.random:seededRng(stoneSeed);
   const swap=playMode==='pvp'&&!isHost;   // 表示上の「1=自分」に合わせ、ゲスト側は所有者を入れ替える
+  const shuf=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
   for(let tries=0;tries<1000;tries++){
     all.forEach(st=>{st.owner=0;st.mt=-1});
-    const idx=all.map((_,i)=>i).sort(()=>rng()-.5);
+    const ctr=shuf(all.map((_,i)=>i).filter(i=>isCtr[i]));
+    const rest=shuf(all.map((_,i)=>i).filter(i=>!isCtr[i]));
+    // 各陣営の6個に、中央を必ず1つ含める(残りはランダム)
+    const pickA=[ctr[0]],pickB=[ctr[1]];
+    const pool=shuf([...ctr.slice(2),...rest]);
+    pickA.push(...pool.splice(0,5));
+    pickB.push(...pool.splice(0,5));
     const A=swap?2:1,B=swap?1:2;
-    for(let k=0;k<9;k++)all[idx[k]].owner=A;
-    for(let k=9;k<18;k++)all[idx[k]].owner=B;
+    pickA.forEach(i=>all[i].owner=A);
+    pickB.forEach(i=>all[i].owner=B);
     if(!scanCompleteLine())break;
   }
   all.forEach(st=>{st.mt=-1});
@@ -578,7 +583,62 @@ function orth(M){
 /* Front-facing pose: slight tilt so top and right faces are visible */
 function frontView(){return orth(mulM(rotM(0,0.42),rotM(1,-0.55)))}
 let userView=frontView();
-function orbit(dx,dy){userView=orth(mulM(mulM(rotM(0,dy*.008),rotM(1,dx*.008)),userView))}
+/* 相手の手・回転にカメラを追従させる(どこを打ったか分かるように) */
+let camGoal=null;   // 目標の視線方向(ワールド座標, カメラ側が正)
+let camRate=0.003;   // 視線の追従の速さ
+let camHold=0,pendingGoal=null;   // ライン表示中は相手の手で視線を奪わない(終わったら追従)
+function focusDir(d,force){
+  const l=Math.hypot(d[0],d[1],d[2])||1;
+  const g=[d[0]/l,d[1]/l,d[2]/l];
+  if(!force&&performance.now()<camHold){pendingGoal=g;return}
+  camGoal=g;
+}
+/* 自分の操作で新しくできたライン(操作前の成立一覧 before と比べる)。状態は変えない */
+function findNewLine(before){
+  const k=formedKeys(boardNow(),1).find(k=>!before.includes(k));
+  return k===undefined?null:LINES[k];
+}
+/* 自分の手で新しいラインができたら、そのラインの面へカメラを移す */
+function focusLine(l){
+  if(!l)return;
+  const st=stickerMap()[l[0]];
+  const c=st&&cubies.find(c=>c.st.includes(st));
+  if(!c)return;
+  camHold=performance.now()+1800;
+  focusDir(mulV(c.M,st.n),true);
+}
+/* 相手が置いたステッカーの面を正面に向ける */
+function focusSticker(st){
+  const c=cubies.find(c=>c.st.includes(st));
+  if(!c)return;
+  focusDir(mulV(c.M,st.n));
+}
+/* 相手が回した層を見やすい側から向ける(最外層なら正面、中央層なら今の向き側) */
+function focusLayer(axis,layer){
+  const cur=[userView[6],userView[7],userView[8]];
+  const s=AX[axis];
+  const sg=layer!==0?Math.sign(layer):(s[0]*cur[0]+s[1]*cur[1]+s[2]*cur[2]>=0?1:-1);
+  focusDir([s[0]*sg+cur[0]*0.25,s[1]*sg+cur[1]*0.25,s[2]*sg+cur[2]*0.25]);
+}
+/* 視線を目標へ滑らかに寄せる(回転行列は直交を保つように組み直す) */
+function followCam(dt){
+  if(!camGoal&&pendingGoal&&performance.now()>=camHold){camGoal=pendingGoal;pendingGoal=null}
+  if(!camGoal)return;
+  const c=[userView[6],userView[7],userView[8]];
+  const k=1-Math.exp(-dt*camRate);
+  let nc=[c[0]+(camGoal[0]-c[0])*k,c[1]+(camGoal[1]-c[1])*k,c[2]+(camGoal[2]-c[2])*k];
+  const nl=Math.hypot(nc[0],nc[1],nc[2])||1;
+  nc=nc.map(v=>v/nl);
+  const a0=[userView[0],userView[1],userView[2]];
+  const dd=a0[0]*nc[0]+a0[1]*nc[1]+a0[2]*nc[2];
+  const a=[a0[0]-dd*nc[0],a0[1]-dd*nc[1],a0[2]-dd*nc[2]];
+  const al=Math.hypot(a[0],a[1],a[2])||1;
+  const an=a.map(v=>v/al);
+  const b=[nc[1]*an[2]-nc[2]*an[1],nc[2]*an[0]-nc[0]*an[2],nc[0]*an[1]-nc[1]*an[0]];
+  userView=[...an,...b,...nc];
+  if(c[0]*camGoal[0]+c[1]*camGoal[1]+c[2]*camGoal[2]>0.9995)camGoal=null;
+}
+function orbit(dx,dy){camGoal=null;pendingGoal=null;camHold=0;userView=orth(mulM(mulM(rotM(0,dy*.008),rotM(1,dx*.008)),userView))}
 
 /* state */
 let state='title';       // title | player | busy | cpu | over
@@ -586,57 +646,22 @@ resize(); // initial layout after state exists
 let mode='MARK';         // MARK | ROTATE (what YOU chose)
 let round=1,anim=null,hl=null,hoverSt=null,level='EASY';
 let playMode='cpu';       // cpu | pvp
-const POOL_MAX=54;       // 各陣営の上限コスト(マーク=2, 回転=1)
-const MARK_COST=2, ROT_COST=1;
+const POOL_MAX=27;       // 各陣営の回転予算(回転1回で1消費。マークは消費しない)
+const ROT_COST=1;
 let playerPool=POOL_MAX, cpuPool=POOL_MAX;
 let humanFirst=true;     // who opens the game (random each start)
-let markLeft=0,rotLeft=0,cpuMarkLeft=0,cpuRotLeft=0; // syncCounts() で導出
-/* 回転=予算(1消費)。マークは「ラインを完成させるたびに1回」獲得し、使うと1減る(累積可) */
-function syncCounts(){
-  rotLeft=playerPool;cpuRotLeft=cpuPool;
-}
+let markLeft=0,rotLeft=0,cpuMarkLeft=0,cpuRotLeft=0; // syncMarks() / syncCounts() で導出
+/* 盤面で今成立しているライン数(その陣営) */
+function countLines(b,who){let n=0;for(const l of LINES){if(b[l[0]]===who&&l.every(i=>b[i]===who))n++}return n}
+function curLines(who){return countLines(boardNow(),who)}
+function lineCount(who){return curLines(who)}
+/* 成立中のライン(LINESの添字の一覧) */
+function formedKeys(b,who){const out=[];LINES.forEach((l,k)=>{if(l.every(i=>b[i]===who))out.push(k)});return out}
+/* MARK: 自分のラインが1本以上成立していれば使える。1ターン1回はMARKがターンを終えることで保証 */
+function syncMarks(){markLeft=curLines(1)>0?1:0;cpuMarkLeft=curLines(2)>0?1:0}
+/* 回転予算の表示用 */
+function syncCounts(){rotLeft=playerPool;cpuRotLeft=cpuPool}
 syncCounts();
-let passCount=0, turnNoAct=false;
-let lineSets={1:new Set(),2:new Set()};  // 一度でも完成した各陣営のライン番号
-let lineRed={1:false,2:false};  // 直前に自分がラインを作った → 次の自分のターンまで赤表示
-let shuffling=false;
-let shuffleQueue=[];   // 新しいラインができたときの、ルービックキューブ式のランダム層回転
-/* 盤面で新しく完成したラインを記録。新規があればtrue */
-function scanLines(){
-  const b=boardNow();let added=false;
-  LINES.forEach((l,k)=>{
-    const a=b[l[0]];
-    if((a===1||a===2)&&l.every(i=>b[i]===a)){
-      if(!lineSets[a].has(k)){lineRed[a]=true;added=true;if(a===1)markLeft++;else cpuMarkLeft++}
-      lineSets[a].add(k);
-    }
-  });
-  return added;
-}
-/* 新しいラインができたら、縦横の層回転をランダムに数回行う(実際のキューブ操作と同じ) */
-function makeShuffleTurns(){
-  const pa=Math.max(playerPool,cpuPool),pb=Math.min(playerPool,cpuPool);
-  const la=lineSets[1].size+lineSets[2].size;
-  let seed=((pa*131+pb)*197+la*31+round*13+1)>>>0;
-  const rnd=()=>{seed^=seed<<13;seed>>>=0;seed^=seed>>>17;seed^=seed<<5;seed>>>=0;return seed/4294967296};
-  const turns=[];let prev=null;
-  for(let k=0;k<SHUFFLE_TURNS;k++){
-    let r;
-    do{r=ROTS[Math.floor(rnd()*ROTS.length)]}while(prev&&prev.axis===r.axis&&prev.layer===r.layer);
-    turns.push(r);prev=r;
-  }
-  return turns;
-}
-const SHUFFLE_TURNS=8, SHUFFLE_MS=110;
-function updateLines(){scanLines()}
-/* シャッフル中は、キューブの層を一つずつ回す(アニメーションの空きに順番に実行) */
-function stepShuffle(){
-  if(anim||!shuffleQueue.length)return;
-  const t=shuffleQueue.shift();
-  startRot(t.axis,t.layer,t.dir,()=>{
-    if(!shuffleQueue.length){shuffling=false;scanLines();setUI()}
-  },SHUFFLE_MS);
-}
 /* 今、盤面で完成しているラインのステッカー */
 function formedStickers(){
   const b=boardNow(),map=stickerMap(),set=new Set();
@@ -646,8 +671,7 @@ function formedStickers(){
   }
   return set;
 }
-function lineCount(who){return lineSets[who].size}   // 何もできないターンが2連続したら引き分け
-let rotatedThisTurn=false; // true after at least one rotate this turn
+let rotatedThisTurn=false; // このターンで回転したか(ターン終了ボタンの表示に使う)
 let turnHist=[];           // undo stack for CURRENT turn only (rotates)
 let hits=[];
 
@@ -742,34 +766,34 @@ function onNetData(msg){
     const st=stickerMap()[msg.i];
     if(!st||st.owner!==1)return;
     state='busy';oppHist=[];
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
+    focusSticker(st);
     st.owner=2;st.mt=performance.now();SND.mark();
     setTimeout(()=>finishMove(2),400);
   }else if(msg.type==='rot'){
     // 相手の回転(手番はまだ終わらない)。UNDOで戻せるよう、直前の状態を記録
     state='busy';
-    oppHist.push({cpuPool,marks:[markLeft,cpuMarkLeft],lines:{1:[...lineSets[1]],2:[...lineSets[2]]}});
+    oppHist.push({cpuPool});
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
+    focusLayer(msg.axis,msg.layer);
     startRot(msg.axis,msg.layer,msg.dir,()=>setUI());
   }else if(msg.type==='unrot'){
     // 相手のUNDO: 直前の回転を逆向きに回し、記録も戻す
     const h=oppHist.pop();
+    focusLayer(msg.axis,msg.layer);
     startRot(msg.axis,msg.layer,msg.dir,()=>{
       if(h){
         cpuPool=h.cpuPool;syncCounts();
-        markLeft=h.marks[0];cpuMarkLeft=h.marks[1];
-        lineSets={1:new Set(h.lines[1]),2:new Set(h.lines[2])};
       }
       setUI();
     },UNDO_MS);
   }else if(msg.type==='end'){
-    state='busy';turnNoAct=false;oppHist=[];
+    state='busy';oppHist=[];
     setTimeout(()=>finishMove(2),200);
   }
 }
 let oppHist=[];   // 相手の回転ごとの記録(相手のUNDOに対応するため)
 function assignSeatsFromFlags(){
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;lineSets={1:new Set(),2:new Set()};lineRed={1:false,2:false};markLeft=0;cpuMarkLeft=0;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;
 }
 function genRoomCode(){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1011,8 +1035,7 @@ function pushTurnHist(r){
   turnHist.push({
     rot:{axis:r.axis,layer:r.layer,dir:r.dir},
     cubies:cloneCubies(),
-    playerPool,rotatedThisTurn,mode,
-    lines:{1:[...lineSets[1]],2:[...lineSets[2]]},marks:[markLeft,cpuMarkLeft]
+    playerPool,rotatedThisTurn,mode
   });
 }
 function clearTurnHist(){turnHist=[];}
@@ -1028,8 +1051,6 @@ function doUndo(){
   startRot(s.rot.axis,s.rot.layer,-s.rot.dir,()=>{
     cubies=s.cubies;
     playerPool=s.playerPool;syncCounts();
-    lineSets={1:new Set(s.lines[1]),2:new Set(s.lines[2])};
-    markLeft=s.marks[0];cpuMarkLeft=s.marks[1];
     rotatedThisTurn=s.rotatedThisTurn;
     mode=s.mode;
     state='player';
@@ -1167,7 +1188,7 @@ function startRot(axis,layer,dir,done,dur=430){
   SND.rot();
 }
 function updateAnim(now){
-  if(!anim){stepShuffle();return}
+  if(!anim)return;
   const t=clamp((now-anim.t0)/anim.dur,0,1);
   anim.ang=anim.dir*(Math.PI/2)*ease(t);
   if(t>=1){
@@ -1186,10 +1207,11 @@ function blocksOpp(r,who){
   return (who===1?playerPool:cpuPool)>=ROT_COST;
 }
 function rotOK(who){return ROTS.some(r=>blocksOpp(r,who))}
-function playerMarkOK(){return markLeft>0&&!rotatedThisTurn}
+function playerMarkOK(){return markLeft>0}
 function playerRotOK(){return rotOK(1)}
 function playerHasAction(){return playerMarkOK()||playerRotOK()}
 function setUI(){
+  syncMarks();
   const mine=state==='player';
   const opp=oppTag();
   const oppTurn=opp+' TURN';
@@ -1201,8 +1223,8 @@ function setUI(){
   const youWho=document.querySelector('#legend .who.you');
   if(youWho)youWho.textContent=myTag();
   const can=state==='player';
-  const canMark=can&&markLeft>0&&!rotatedThisTurn;
-  const canRot=can&&playerRotOK()&&!shuffling;
+  const canMark=can&&markLeft>0;
+  const canRot=can&&playerRotOK();
   // auto-switch mode when current choice is exhausted
   if(can&&mode==='MARK'&&!canMark&&canRot)mode='ROTATE';
   if(can&&mode==='ROTATE'&&!canRot&&canMark)mode='MARK';
@@ -1222,7 +1244,7 @@ function setUI(){
   }else if(!playerHasAction()){
     $('hint').textContent='No moves left. End turn.';
   }else if(mode==='MARK'&&canMark){
-    $('hint').textContent=rotatedThisTurn?'Convert a CPU mark, or end turn.':'Convert a CPU mark.';
+    $('hint').textContent='Convert a CPU mark.';
   }else if(mode==='ROTATE'&&canRot){
     $('hint').textContent=rotatedThisTurn?'Rotate more, or end turn.':'Drag a face to rotate.';
   }else if(markLeft<=0){
@@ -1238,42 +1260,37 @@ function setUI(){
   const rt=$('roundTop');if(rt)rt.textContent='ROUND '+round;
   setStat('pRound','LINE',lineCount(1),-1);
   setStat('cRound','LINE',lineCount(2),-1);
-  $('pRound').style.color=lineRed[1]?'#c42a25':'';
-  $('cRound').style.color=lineRed[2]?'#c42a25':'';
-  setStat('pMarks','MARK',markLeft,2);
-  setStat('cMarks','MARK',cpuMarkLeft,2);
+  setStat('pMarks','MARK',markLeft,0);
+  setStat('cMarks','MARK',cpuMarkLeft,0);
   setStat('pRots','ROTATE',rotLeft,5);
   setStat('cRots','ROTATE',cpuRotLeft,5);
   const undoBtn=$('undo');
   if(undoBtn)undoBtn.disabled=!canUndo();
   cv.style.cursor=can?(mode==='MARK'&&canMark?'default':(mode==='ROTATE'&&canRot?'grab':'default')):'default';
 }
-/* 案4: どちらかの予算が0になった時点で終了。勝敗は完成ライン数(多い方が勝ち) */
 /* 盤面で完成したラインの履歴をエンジン用の形式に変換 */
 function lineStateForCpu(){
   const ls=[new Uint8Array(LINES.length),new Uint8Array(LINES.length)];
-  for(const k of lineSets[1])ls[0][k]=1;
-  for(const k of lineSets[2])ls[1][k]=1;
+  LINES.forEach((l,k)=>{const b=boardNow();if(l.every(i=>b[i]===1))ls[0][k]=1;if(l.every(i=>b[i]===2))ls[1][k]=1});
   return ls;
 }
+/* 勝敗: 駒が3個以下になった側は負け(ラインが作れない)。どちらかの回転予算が尽きたら終了し、駒の多い方が勝ち */
 function gameResult(){
-  const b=boardNow();
-  let n1=0,n2=0;for(const x of b){if(x===1)n1++;else if(x===2)n2++}
-  const lose1=n1<=3,lose2=n2<=3;
-  if(lose1||lose2)return lose1&&lose2?'D':lose1?'C':'P';
+  const b=boardNow(),[s1,s2]=stoneCountsOf(b);
+  const lose1=s1<=3,lose2=s2<=3;
+  if(lose1||lose2){
+    if(lose1&&lose2)return s1>s2?'P':s2>s1?'C':'D';
+    return lose1?'C':'P';
+  }
   if(playerPool>0&&cpuPool>0)return null;
-  const l1=lineCount(1),l2=lineCount(2);
-  return l1>l2?'P':l2>l1?'C':'D';
+  return s1>s2?'P':s2>s1?'C':'D';
 }
 function finishMove(who){
-  if(shuffling){setTimeout(()=>finishMove(who),60);return}   // シャッフルが終わるまで待つ
   lastWho=who;
   clearTurnHist();
-  updateLines();
-  lineRed[3-who]=false;   // 次に手番が来る側の赤表示を解除
   const b=boardNow(),o=gameResult();
   if(o){endGame(o,b);return}
-
+  syncMarks();
   if(who===1){
     if(!humanFirst)round++;
     state='cpu';rotatedThisTurn=false;setUI();
@@ -1295,44 +1312,44 @@ function cpuTurn(){
 function cpuStep(n){
   const P=LEVELS[level]||LEVELS.EASY;
   const b=boardNow();
-  const a=chooseIter(b,2,[0,playerPool,cpuPool],[0,markLeft,cpuMarkLeft],n,P,Math.random,lineStateForCpu());
-  if(a.type==='end'){turnNoAct=(n===0);setTimeout(()=>finishMove(2),200);return}
-  turnNoAct=false;
+  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random,lineStateForCpu());
+  if(a.type==='end'){setTimeout(()=>finishMove(2),200);return}
   if(a.type==='mark'){
-    cpuMarkLeft=Math.max(0,cpuMarkLeft-1);
-    const st=stickerMap()[a.i];st.owner=2;st.mt=performance.now();SND.mark();
+    const st=stickerMap()[a.i];focusSticker(st);st.owner=2;st.mt=performance.now();SND.mark();
     setUI();
     setTimeout(()=>finishMove(2),420);
   }else{
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
-    const r=ROTS[a.r];
+    const r=ROTS[a.r];focusLayer(r.axis,r.layer);
     startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
       finishMove(2);
     },120));
   }
 }
 function doPlayerMark(st){
-  if(markLeft<=0||rotatedThisTurn||st.owner!==2)return;
+  if(markLeft<=0||st.owner!==2)return;
   clearTurnHist();
   state='busy';lastWho=2;
-  markLeft--;
+  const before=formedKeys(boardNow(),1);
   // find slot index for net sync
   let slot=-1;const map=stickerMap();
   for(let i=0;i<NCELL;i++)if(map[i]===st){slot=i;break}
-  st.owner=1;st.mt=performance.now();SND.mark();setUI();
+  st.owner=1;st.mt=performance.now();SND.mark();setUI();focusLine(findNewLine(before));
   if(playMode==='pvp')netSend({type:'mark',i:slot});
   setTimeout(()=>finishMove(1),400);
 }
 function doPlayerRot(r){
-  if(!blocksOpp(r,1))return;   // 相手のリーチを減らさない回転は不可
+  if(!blocksOpp(r,1))return;   // 回転予算が残っていない時は不可
   pushTurnHist(r);
   state='busy';lastWho=2;setUI();
   playerPool-=ROT_COST;syncCounts();
   rotatedThisTurn=true;
   if(playMode==='pvp')netSend({type:'rot',axis:r.axis,layer:r.layer,dir:r.dir});
+  const before=formedKeys(boardNow(),1);
   startRot(r.axis,r.layer,r.dir,()=>{
     const b=boardNow(),o=gameResult();
     if(o){endGame(o,b);return}
+    focusLine(findNewLine(before));
     state='player';
     setUI();
   });
@@ -1341,7 +1358,6 @@ function endPlayerTurn(force){
   if(state!=='player')return;
   if(!force&&!rotatedThisTurn&&playerHasAction())return;
   clearTurnHist();
-  turnNoAct=!rotatedThisTurn;
   state='busy';lastWho=2;setUI();
   if(playMode==='pvp')netSend({type:'end'});
   setTimeout(()=>finishMove(1),200);
@@ -1369,7 +1385,7 @@ function endGame(o,b){
 
 function assignSeats(){
   humanFirst=Math.random()<0.5;
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();passCount=0;turnNoAct=false;lineSets={1:new Set(),2:new Set()};lineRed={1:false,2:false};markLeft=0;cpuMarkLeft=0;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;
 }
 function beginPlay(){
   $('deal').classList.add('hidden');$('deal').classList.remove('show');
@@ -1459,7 +1475,7 @@ function solveRot(h,d){
 
 /* ---------- pointer input ---------- */
 let down=null;
-const canAct=()=>state==='player'&&!anim&&!shuffling;
+const canAct=()=>state==='player'&&!anim;
 cv.addEventListener('pointerdown',e=>{
   cv.setPointerCapture(e.pointerId);
   if(state==='title'){down={mode:'orbit',lx:e.clientX,ly:e.clientY};return}
@@ -1469,7 +1485,7 @@ cv.addEventListener('pointermove',e=>{
   if(!down){
     const h=hitTest(e.clientX,e.clientY);
     hoverSt=(h&&h.st.owner===2&&markLeft>0&&!rotatedThisTurn)?h.st:null;
-    cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0&&!rotatedThisTurn?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
+    cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
     return;
   }
   if(!down.mode){
@@ -1567,6 +1583,7 @@ let prev=performance.now();
 function loop(now){
   const dt=Math.min(50,now-prev);prev=now;
   if(state==='title'&&!(down&&down.mode))userView=orth(mulM(rotM(1,dt*.0004),userView));
+  followCam(dt);
   updateAnim(now);
   draw(now);
   requestAnimationFrame(loop);
