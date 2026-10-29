@@ -139,10 +139,9 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
   <div class="panel">
     <div class="sec">VS CPU</div>
     <div class="row">
-      <button id="lvEASY" class="btn sm">EASY</button>
-      <button id="lvNORMAL" class="btn sm">NORMAL</button>
-      <button id="lvHARD" class="btn sm">HARD</button>
-      <button id="lvMASTER" class="btn sm">PERFECT</button>
+      <button id="lvEASY" class="btn sm">easy</button>
+      <button id="lvNORMAL" class="btn sm">normal</button>
+      <button id="lvHARD" class="btn sm">hard</button>
     </div>
     <div class="sec">MULTI</div>
     <input id="nickInput" class="hidden" type="text" maxlength="8" placeholder="PLAYER NAME" autocomplete="off" spellcheck="false">
@@ -324,10 +323,9 @@ function applyMove(b,m,who){
    PART 2 : CPU (pure, see chooseIter)
    ===================================================== */
 const LEVELS={
-  EASY:   {depth:1, noise:2.4,  cap:54, W:{mark:54,rot:18}, budgetMs:0,    mistakesPerGame:0},
-  NORMAL: {depth:2, noise:0.8,  cap:54, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
-  HARD:   {depth:3, noise:0.15, cap:54, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
-  PERFECT:{depth:6, noise:0.3,    cap:54, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
+  EASY:   {depth:2, noise:0.8,  cap:54, W:{mark:10,rot:18}, budgetMs:0,    mistakesPerGame:0},
+  NORMAL: {depth:3, noise:0.15, cap:54, W:{mark:6,rot:12},  budgetMs:2000, mistakesPerGame:0},
+  HARD:   {depth:6, noise:0.3,    cap:54, W:{mark:8,rot:12},  budgetMs:1200, mistakesPerGame:0}
 };
 let mistakesLeft=0;
 /* ===== CPU ENGINE (刷新版: 回転=予算, マーク=ライン完成で獲得, 完成ライン数で判定) ===== */
@@ -376,8 +374,12 @@ function rotPen(b,ls,nb,kl,side){
   const good=side===2?d>0:d<0;
   return good?0:(side===2?-ROT_PEN:ROT_PEN);
 }
+/* 盤面評価(CPU=2の視点で正が有利)。駒差を主軸に、ラインはマーク権として加点する。
+   相手のラインは自分の駒が奪われる脅威なので減点 → 防ぐだけでなく、自分のマークを狙う動機になる */
 function leafEval(b,ls){
-  return 1000*(lineN(ls[1])-lineN(ls[0]))
+  const [a,c]=stoneCountsOf(b);
+  return 300*(c-a)
+    +200*(lineN(ls[1])-lineN(ls[0]))
     +100*(countThreats(b,2)-countThreats(b,1))
     +80*(openLines(b,2)-openLines(b,1));
 }
@@ -431,7 +433,7 @@ function sMinimax(b,side,Q,rt,depth,alpha,beta,P,ls){
   if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT;
   {const [a,c]=stoneCountsOf(b);
    if(a<=3||c<=3){const v=(a<=3&&c<=3)?finalValue(b):(a<=3?-1e6:1e6);return v+depth*0.001}}
-  if(Q[1]<=0||Q[2]<=0)return finalValue(b)+depth*0.001;
+  if(Q[1]<=0&&Q[2]<=0)return finalValue(b)+depth*0.001;   // 両者の予算が尽きたら終局
   if(depth<=0)return leafEval(b,ls);
   const maxing=side===2;
   let kids=kidsOf(b,side,Q,rt,P.cap,P.W);
@@ -1282,7 +1284,7 @@ function gameResult(){
     if(lose1&&lose2)return s1>s2?'P':s2>s1?'C':'D';
     return lose1?'C':'P';
   }
-  if(playerPool>0&&cpuPool>0)return null;
+  if(playerPool>0||cpuPool>0)return null;   // 両者の回転予算が尽きるまで続ける
   return s1>s2?'P':s2>s1?'C':'D';
 }
 function finishMove(who){
@@ -1526,7 +1528,6 @@ function startCpu(lv){
 $('lvEASY').onclick=()=>startCpu('EASY');
 $('lvNORMAL').onclick=()=>startCpu('NORMAL');
 $('lvHARD').onclick=()=>startCpu('HARD');
-$('lvMASTER').onclick=()=>startCpu('PERFECT');
 
 $('btnLocal').onclick=()=>{
   $('nickInput').classList.remove('hidden');
