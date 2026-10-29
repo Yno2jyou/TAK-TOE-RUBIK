@@ -128,6 +128,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
   .btn{min-width:104px;padding:10px 16px;font-size:14px}
   #modes button{padding:9px 22px;font-size:12px}
 }
+.cost{font-size:.8em;opacity:.7;margin-left:.3em}
 </style>
 </head>
 <body>
@@ -180,21 +181,20 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
     <div id="roundTop" style="position:fixed;top:10px;left:50%;transform:translateX(-50%);font-weight:700;letter-spacing:.12em;pointer-events:none;z-index:5">ROUND 1</div>
     <div id="turn">YOUR TURN</div>
     <div id="modes">
-      <button id="mMark" class="on">MARK</button>
-      <button id="mRot">ROTATE</button>
+      <button id="mPlace">PLACE <span class="cost">10 pts</span></button>
+      <button id="mMark" class="on">MARK <span class="cost">0 uses</span></button>
+      <button id="mRot">ROTATE <span class="cost">1 pt</span></button>
     </div>
     <button id="mEnd" class="end-btn hidden">END TURN</button>
     <div id="hint">Convert a CPU mark.</div>
     <div id="legend">
       <div class="row">
         <span class="who you">YOU</span>
-        <span class="stat" id="pRound">LINE 0</span>
         <span class="stat" id="pMarks">MARK 7</span>
         <span class="stat" id="pRots">ROTATE 30</span>
       </div>
       <div class="row">
         <span class="who cpu">CPU</span>
-        <span class="stat" id="cRound">LINE 0</span>
         <span class="stat" id="cMarks">MARK 9</span>
         <span class="stat" id="cRots">ROTATE 30</span>
       </div>
@@ -219,6 +219,9 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>window.Peer||document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
 <script>
+const PLACE_COST=10;  // 配置1回の回転予算コスト
+const PLAN_BONUS=900; // ライン作りの経路の一手目に与える加点
+
 'use strict';
 /* モバイル: キーボードが出ても入力欄が隠れないよう、タイトル画面を可視領域に合わせる */
 (function(){
@@ -376,12 +379,24 @@ function rotPen(b,ls,nb,kl,side){
 }
 /* 盤面評価(CPU=2の視点で正が有利)。駒差を主軸に、ラインはマーク権として加点する。
    相手のラインは自分の駒が奪われる脅威なので減点 → 防ぐだけでなく、自分のマークを狙う動機になる */
+/* MARK権の見込み: 今持っている権利 + このターン中に新しく作ったライン(ターン終了時に累積される) */
+function markProspect(ls,who){
+  const ms=(typeof markStock!=='undefined')?markStock:[0,0,0];
+  const ts=(typeof turnStart!=='undefined')?turnStart:[null,[],[]];
+  const base=ts[who]||[];
+  let n=0;
+  for(let k=0;k<LINES.length;k++)if(ls[who-1][k]&&!base.includes(k))n++;
+  return ms[who]+n;
+}
 function leafEval(b,ls){
+  // 攻め重視: 自分のラインは大きく加点、相手のラインは小さく減点。
+  // MARK権の差を大きく評価し、相手が権利を持てばCPUも権利を取り返しにいく
   const [a,c]=stoneCountsOf(b);
   return 300*(c-a)
-    +200*(lineN(ls[1])-lineN(ls[0]))
-    +100*(countThreats(b,2)-countThreats(b,1))
-    +80*(openLines(b,2)-openLines(b,1));
+    +400*lineN(ls[1])-150*lineN(ls[0])
+    +600*(markProspect(ls,2)-markProspect(ls,1))
+    +100*countThreats(b,2)-30*countThreats(b,1)
+    +80*openLines(b,2)-20*openLines(b,1);
 }
 function winCells(b,who){
   const out=[];
@@ -408,17 +423,68 @@ function breaks(b,i,opp){
   }
   return n;
 }
-function kidsOf(b,side,Q,rt,cap,W){
+/* この石を相手が自分のラインの一部として守っているか(相手が揃えた線に含まれる駒は奪えない) */
+function protectedStone(b,i,who){return LINES.some(l=>l.includes(i)&&l.every(x=>b[x]===who))}
+/* 回転1回でラインまたはリーチ(あと1で揃う形)を作れるか */
+/* 回転を最大maxRot回まで重ねて、ラインを作れるか。
+   幅広いビーム探索(各段で有望な盤面を最大40件残し、同じ盤面は1回だけ展開)。結果はキャッシュする */
+let REACH_CACHE=new Map();
+/* 回転を最大maxRot回まで重ねて、ラインを作れるかを探す(ビーム探索)。
+   見つかったら、その経路の最初の一手(ROTSの添字)も返す。結果はキャッシュする */
+function lineReachPlan(b,side,maxRot){
+  const key=side+':'+maxRot+':'+b.join('');
+  if(REACH_CACHE.has(key))return REACH_CACHE.get(key);
+  const base=boardLines(b,side);
+  let beam=[{nb:b,first:-1}];
+  let res={found:false,first:-1};
+  search:
+  for(let step=0;step<maxRot;step++){
+    const cand=new Map();
+    for(const st of beam)for(let r=0;r<ROTS.length;r++){
+      const nb=rotBoard(st.nb,ROTS[r]);
+      const first=st.first<0?r:st.first;
+      if(boardLines(nb,side)>base){res={found:true,first};break search}
+      const k=nb.join('');
+      if(!cand.has(k))cand.set(k,{nb,first,score:countThreats(nb,side)*100-countThreats(nb,3-side)*60+openLines(nb,side)*40});
+    }
+    beam=[...cand.values()].sort((x,y)=>y.score-x.score).slice(0,40);
+    if(!beam.length)break;
+  }
+  REACH_CACHE.set(key,res);
+  return res;
+}
+function lineReachable(b,side,maxRot){return lineReachPlan(b,side,maxRot).found}
+function rotationCanReach(b,side){
+  const t0=countThreats(b,side),l0=boardLines(b,side);
+  for(const r of ROTS){
+    const nb=rotBoard(b,r);
+    if(boardLines(nb,side)>l0||countThreats(nb,side)>t0)return true;
+  }
+  return false;
+}
+function kidsOf(b,side,Q,rt,cap,W,win,markOK){
   const kids=[];
-  // マーク: 自分のラインが1本以上あれば使える(ターンを終える)。自分の線を作る/相手のリーチを崩す駒を優先
-  if(boardLines(b,side)>0){
+  // マーク: 自分の操作で今ラインが揃った直後だけ使える(ターンを終える)。守られていない相手の駒を奪う
+  if(markOK){
     const arr=[];
     for(let i=0;i<NCELL;i++)if(b[i]===3-side)
       arr.push({i,pre:affinity(b,i,side)*10+breaks(b,i,3-side)*50});
     arr.sort((x,y)=>y.pre-x.pre||x.i-y.i);
     for(const c of arr.slice(0,W.mark)){const nb=b.slice();nb[c.i]=side;kids.push({t:0,i:c.i,nb});}
   }
-  if(Q[side]>=COST.rot&&rt<cap){
+  // 配置: ターンの最初の操作として空いている所に自分の駒を置く(置いて揃えば、その直後にMARKか終了)
+  if(!win&&rt===0&&Q[side]>=PLACE_COST&&(side!==2||!lineReachable(b,side,10))){
+    const emp=[];
+    for(let i=0;i<NCELL;i++)if(b[i]===0){
+      const nb=b.slice();nb[i]=side;
+      const lineNow=boardLines(nb,side)>boardLines(b,side)?1:0;
+      const reachNow=countThreats(nb,side)>countThreats(b,side)?1:0;
+      emp.push({i,pre:lineNow*100000+reachNow*10000+affinity(b,i,side)*10+breaks(b,i,3-side)*50});
+    }
+    emp.sort((x,y)=>y.pre-x.pre||x.i-y.i);
+    for(const c of emp.slice(0,W.place||12)){const nb=b.slice();nb[c.i]=side;kids.push({t:2,i:c.i,nb});}
+  }
+  if(!win&&Q[side]>=COST.rot&&rt<cap){
     for(let r=0;r<ROTS.length;r++){
       const nb=rotBoard(b,ROTS[r]);
       if(nb.every((v,i)=>v===b[i]))continue;
@@ -429,53 +495,66 @@ function kidsOf(b,side,Q,rt,cap,W){
 }
 const ABORT={};
 const SRCH={dl:Infinity,n:0};
-function sMinimax(b,side,Q,rt,depth,alpha,beta,P,ls){
+/* 駒数: [先手(1)の駒数, 後手(2)の駒数] */
+function stoneCountsOf(b){let a=0,c=0;for(const x of b){if(x===1)a++;else if(x===2)c++}return [a,c]}
+/* 終局評価: 駒の多い方が勝ち(CPU=2の視点で正が有利) */
+function finalValue(b){const [a,c]=stoneCountsOf(b);return 1000*(c-a)}
+/* 配置/マーク/回転の子ノード。配置・回転で揃った場合は同じ側の手番が続く(win=true) */
+function childOf(k,side,Q,rt,depth,alpha,beta,P){
+  if(k.t===0)return sMinimax(k.nb,3-side,Q,0,depth-1,alpha,beta,P,k.ls,false);
+  if(k.t===2){const Q3=Q.slice();Q3[side]-=PLACE_COST;return sMinimax(k.nb,3-side,Q3,0,depth-1,alpha,beta,P,k.ls,false)}
+  const Q2=Q.slice();Q2[side]-=COST.rot;
+  return sMinimax(k.nb,side,Q2,rt+1,depth-1,alpha,beta,P,k.ls,k.win)+k.pen;
+}
+function sMinimax(b,side,Q,rt,depth,alpha,beta,P,ls,win){
   if((++SRCH.n&127)===0&&Date.now()>SRCH.dl)throw ABORT;
   {const [a,c]=stoneCountsOf(b);
-   if(a<=3||c<=3){const v=(a<=3&&c<=3)?finalValue(b):(a<=3?-1e6:1e6);return v+depth*0.001}}
-  if(Q[1]<=0&&Q[2]<=0)return finalValue(b)+depth*0.001;   // 両者の予算が尽きたら終局
+   if(a<=2||c<=2){const v=(a<=2&&c<=2)?finalValue(b):(a<=2?-1e6:1e6);return v+depth*0.001}}
+  if(Q[1]<=0&&Q[2]<=0)return finalValue(b)+depth*0.001;
   if(depth<=0)return leafEval(b,ls);
   const maxing=side===2;
-  let kids=kidsOf(b,side,Q,rt,P.cap,P.W);
+  let kids=kidsOf(b,side,Q,rt,P.cap,P.W,win,false);
   for(const k of kids){
-    k.ls=k.t===0?addLines(ls,k.nb):ls;   // 回転中はライン換算しない(ターン終了時に換算)
+    k.ls=k.t===0?addLines(ls,k.nb):ls;
     k.pen=k.t===1?rotPen(b,ls,k.nb,k.ls,side):0;
+    k.win=k.t===1&&boardLines(k.nb,side)>boardLines(b,side);   // 回転で揃った(以後この手番は回転不可)
     k.v=leafEval(k.nb,k.ls)+k.pen;
   }
   kids.sort((x,y)=>maxing?y.v-x.v:x.v-y.v);
-  let rots=0;kids=kids.filter(k=>k.t===0||(++rots<=P.W.rot));
+  let rots=0;kids=kids.filter(k=>k.t!==1||(++rots<=P.W.rot));
   let best=maxing?-Infinity:Infinity;
   for(const k of kids){
-    let v;
-    if(k.t===0){v=sMinimax(k.nb,3-side,Q,0,depth-1,alpha,beta,P,k.ls);}
-    else{const Q2=Q.slice();Q2[side]-=COST.rot;v=sMinimax(k.nb,side,Q2,rt+1,depth-1,alpha,beta,P,k.ls)+k.pen;}
+    const v=childOf(k,side,Q,rt,depth,alpha,beta,P);
     if(maxing){if(v>best)best=v;if(best>alpha)alpha=best;}
     else{if(v<best)best=v;if(best<beta)beta=best;}
     if(beta<=alpha)break;
   }
   if(rt>0&&beta>alpha){
     const kl=addLines(ls,b);
-    const v=sMinimax(b,3-side,Q,0,depth-1,alpha,beta,P,kl);
+    const v=sMinimax(b,3-side,Q,0,depth-1,alpha,beta,P,kl,false);
     if(maxing){if(v>best)best=v;}else{if(v<best)best=v;}
   }
   if(best===Infinity||best===-Infinity)return leafEval(b,ls);
   return best;
 }
-function chooseAction(b,me,Q,rt,P,rng,ls){
-  const RW={mark:NCELL,rot:ROTS.length};
+function chooseAction(b,me,Q,rt,P,rng,ls,win,markOK){
+  const RW={mark:NCELL,rot:ROTS.length,place:12};
   const opt=[];
-  for(const k of kidsOf(b,me,Q,rt,P.cap,RW)){
-    const kl=k.t===0?addLines(ls,k.nb):ls;
-    let v;
-    if(k.t===0){v=sMinimax(k.nb,3-me,Q,0,P.depth-1,-Infinity,Infinity,P,kl);}
-    else{const Q2=Q.slice();Q2[me]-=COST.rot;v=sMinimax(k.nb,me,Q2,rt+1,P.depth-1,-Infinity,Infinity,P,kl)+rotPen(b,ls,k.nb,kl,me);}
+  const plan=(me===2&&!win)?lineReachPlan(b,2,10):{found:false,first:-1};
+  for(const k of kidsOf(b,me,Q,rt,P.cap,RW,win,markOK)){
+    k.ls=k.t===0?addLines(ls,k.nb):ls;
+    k.win=k.t===1&&boardLines(k.nb,me)>boardLines(b,me);
+    k.pen=k.t===1?rotPen(b,ls,k.nb,k.ls,me):0;
+    let v=childOf(k,me,Q,rt,P.depth,-Infinity,Infinity,P);
     if(k.t===1)v-=(me===2?1:-1)*ROT_TEMPO*(rt+1);   // 評価の符号(陣営)に合わせて減点
-    opt.push({a:k.t===0?{type:'mark',i:k.i}:{type:'rot',r:k.r},v,t:k.t});
+    if(k.t===1&&plan.found&&k.r===plan.first)v+=PLAN_BONUS;   // 10回以内でライン化できる経路を優先
+    const act=k.t===0?{type:'mark',i:k.i}:k.t===2?{type:'place',i:k.i}:{type:'rot',r:k.r};
+    opt.push({a:act,v,t:k.t});
   }
   if(rt>0){
     const kl=addLines(ls,b);
-    const v=sMinimax(b,3-me,Q,0,P.depth-1,-Infinity,Infinity,P,kl);
-    opt.push({a:{type:'end'},v,t:2});
+    const v=sMinimax(b,3-me,Q,0,P.depth-1,-Infinity,Infinity,P,kl,false);
+    opt.push({a:{type:'end'},v,t:3});
   }
   if(!opt.length)return {type:'end'};
   const sg=me===2?1:-1;
@@ -483,12 +562,13 @@ function chooseAction(b,me,Q,rt,P,rng,ls){
   opt.sort((x,y)=>y.score-x.score||(x.t-y.t));
   return opt[0].a;
 }
-function chooseIter(b,me,Q,rt,P,rng,ls){
+function chooseIter(b,me,Q,rt,P,rng,ls,win,markOK){
+  REACH_CACHE=new Map();
   if(!ls)ls=addLines([new Uint8Array(LINES.length),new Uint8Array(LINES.length)],b);
   let best=null;
   SRCH.dl=P.budgetMs?Date.now()+P.budgetMs:Infinity;
   for(let d=1;d<=P.depth;d++){
-    try{best=chooseAction(b,me,Q,rt,Object.assign({},P,{depth:d}),rng,ls)}
+    try{best=chooseAction(b,me,Q,rt,Object.assign({},P,{depth:d}),rng,ls,!!win,!!markOK)}
     catch(e){if(e===ABORT)break;throw e}
   }
   return best||{type:'end'};
@@ -540,11 +620,11 @@ function placeStones(){
     all.forEach(st=>{st.owner=0;st.mt=-1});
     const ctr=shuf(all.map((_,i)=>i).filter(i=>isCtr[i]));
     const rest=shuf(all.map((_,i)=>i).filter(i=>!isCtr[i]));
-    // 各陣営の6個に、中央を必ず1つ含める(残りはランダム)
+    // 各陣営の4個に、中央を必ず1つ含める(残りはランダム。3個以下では即負けになるため4個から開始)
     const pickA=[ctr[0]],pickB=[ctr[1]];
     const pool=shuf([...ctr.slice(2),...rest]);
-    pickA.push(...pool.splice(0,5));
-    pickB.push(...pool.splice(0,5));
+    pickA.push(...pool.splice(0,3));
+    pickB.push(...pool.splice(0,3));
     const A=swap?2:1,B=swap?1:2;
     pickA.forEach(i=>all[i].owner=A);
     pickB.forEach(i=>all[i].owner=B);
@@ -596,6 +676,11 @@ function focusDir(d,force){
   camGoal=g;
 }
 /* 自分の操作で新しくできたライン(操作前の成立一覧 before と比べる)。状態は変えない */
+/* 相手(who)の操作で新しく揃ったライン(あればその線、なければnull) */
+function newLineOf(before,who){
+  const k=formedKeys(boardNow(),who).find(k=>!before.includes(k));
+  return k===undefined?null:LINES[k];
+}
 function findNewLine(before){
   const k=formedKeys(boardNow(),1).find(k=>!before.includes(k));
   return k===undefined?null:LINES[k];
@@ -648,7 +733,7 @@ resize(); // initial layout after state exists
 let mode='MARK';         // MARK | ROTATE (what YOU chose)
 let round=1,anim=null,hl=null,hoverSt=null,level='EASY';
 let playMode='cpu';       // cpu | pvp
-const POOL_MAX=27;       // 各陣営の回転予算(回転1回で1消費。マークは消費しない)
+const POOL_MAX=54;       // 各陣営の回転予算(回転1回で1消費。マークは消費しない)
 const ROT_COST=1;
 let playerPool=POOL_MAX, cpuPool=POOL_MAX;
 let humanFirst=true;     // who opens the game (random each start)
@@ -660,7 +745,7 @@ function lineCount(who){return curLines(who)}
 /* 成立中のライン(LINESの添字の一覧) */
 function formedKeys(b,who){const out=[];LINES.forEach((l,k)=>{if(l.every(i=>b[i]===who))out.push(k)});return out}
 /* MARK: 自分のラインが1本以上成立していれば使える。1ターン1回はMARKがターンを終えることで保証 */
-function syncMarks(){markLeft=curLines(1)>0?1:0;cpuMarkLeft=curLines(2)>0?1:0}
+function syncMarks(){markLeft=(state==='player'&&!markedThisTurn)?markStock[1]:0;cpuMarkLeft=markStock[2]}
 /* 回転予算の表示用 */
 function syncCounts(){rotLeft=playerPool;cpuRotLeft=cpuPool}
 syncCounts();
@@ -674,6 +759,24 @@ function formedStickers(){
   return set;
 }
 let rotatedThisTurn=false; // このターンで回転したか(ターン終了ボタンの表示に使う)
+let markWindow=false;      // 自分の操作でラインが揃った直後だけMARKできる(次の操作で閉じる)
+let placedThisTurn=false;  // このターンで駒を置いたか
+let rotLockTurn=false;
+let markedThisTurn=false;  // このターンでMARKを使ったか(MARKの後も回転・ターン終了はできる)     // ROTATEでラインが揃ったら、そのターンはこれ以上ROTATEできない
+let oppHL=null;            // 相手が直前に行った手の場所。自分のターンが終わるまで残す
+let oppHLColor='#ffd400';  // 配置・回転は黄色、MARKは緑
+/* 相手の手の場所を記録: 配置/MARKは1マス、回転は回した層の全ステッカー */
+function setOppHLSticker(...sts){oppHL=new Set(sts.filter(Boolean));oppHLColor='#ffd400'}
+function setOppHLMark(st){oppHL=new Set([st]);oppHLColor='#3ddc52'}
+function setOppHLLayer(axis,layer){
+  const set=new Set();
+  for(const c of cubies)if(c.pos[axis]===layer)c.st.forEach(st=>set.add(st));
+  oppHL=set;oppHLColor='#ffd400';
+}
+let markUsed=[0,0,0];      // MARKの使用回数(陣営ごと)
+let markStock=[0,0,0];     // 累積するMARK権(ターン終了時点で残っていた「ターン中に作ったライン」の数)
+let turnStart=[null,[],[]]; // 各陣営のターン開始時点で成立していたライン
+let cpuMarkWindow=false;   // CPUも同じ(揃えた直後のみ)
 let turnHist=[];           // undo stack for CURRENT turn only (rotates)
 let hits=[];
 
@@ -764,23 +867,37 @@ function onNetData(msg){
   }
   if(msg.type==='pong')return;
   if(state==='title'||state==='over')return;
-  if(msg.type==='mark'){
+  if(msg.type==='place'){
+    const st=stickerMap()[msg.i];
+    if(!st||st.owner!==0)return;
+    state='busy';oppHist=[];
+    cpuPool=Math.max(0,cpuPool-PLACE_COST);syncCounts();
+    const before=formedKeys(boardNow(),2);
+    focusSticker(st);
+    st.owner=2;st.mt=performance.now();SND.ui();setOppHLSticker(st);
+    const formed=formedKeys(boardNow(),2).some(k=>!before.includes(k));
+    if(!formed)setTimeout(()=>finishMove(2),300);
+    else{focusLine(newLineOf(before,2));setUI()}
+  }else if(msg.type==='mark'){
     const st=stickerMap()[msg.i];
     if(!st||st.owner!==1)return;
     state='busy';oppHist=[];
+    const mb=formedKeys(boardNow(),2);
     focusSticker(st);
-    st.owner=2;st.mt=performance.now();SND.mark();
-    setTimeout(()=>finishMove(2),400);
+    st.owner=2;st.mt=performance.now();SND.mark();setOppHLMark(st);markUsed[2]++;
+    focusLine(newLineOf(mb,2));
+    setUI();   // 相手は同じターンで続けて回転などをするため、endを待つ
   }else if(msg.type==='rot'){
     // 相手の回転(手番はまだ終わらない)。UNDOで戻せるよう、直前の状態を記録
     state='busy';
     oppHist.push({cpuPool});
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
-    focusLayer(msg.axis,msg.layer);
-    startRot(msg.axis,msg.layer,msg.dir,()=>setUI());
+    focusLayer(msg.axis,msg.layer);setOppHLLayer(msg.axis,msg.layer);
+    const rb=formedKeys(boardNow(),2);
+    startRot(msg.axis,msg.layer,msg.dir,()=>{focusLine(newLineOf(rb,2));setUI()});
   }else if(msg.type==='unrot'){
     // 相手のUNDO: 直前の回転を逆向きに回し、記録も戻す
-    const h=oppHist.pop();
+    const h=oppHist.pop();oppHL=null;
     focusLayer(msg.axis,msg.layer);
     startRot(msg.axis,msg.layer,msg.dir,()=>{
       if(h){
@@ -795,7 +912,7 @@ function onNetData(msg){
 }
 let oppHist=[];   // 相手の回転ごとの記録(相手のUNDOに対応するため)
 function assignSeatsFromFlags(){
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;markWindow=false;cpuMarkWindow=false;placedThisTurn=false;markStock=[0,0,0];markUsed=[0,0,0];turnStart=[null,[],[]];markedThisTurn=false;rotLockTurn=false;
 }
 function genRoomCode(){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1162,10 +1279,13 @@ function draw(now){
     if(win){fill=pulse>.5?ACC:'#c42a25';mc='#fff'}
     else if(formed&&formed.has(st)){fill='#c42a25';mc='#fff'}
     poly(sp,fill,ow===2&&!win?'#4a4a4a':null,1.5);
+    if(oppHL&&oppHL.has(st)){ctx.globalAlpha=.35+.25*Math.sin(now/160);poly(sp,oppHLColor,null,0);ctx.globalAlpha=1}
     if(ow>0){
       const prog=st.mt<0?1:easeBack(clamp((now-st.mt)/300,0,1));
       glyph(ow,f.fc,f.u,f.v,f.nw,Math.max(.01,prog),mc);
     }else if(hoverSt===st&&mode==='MARK'&&markLeft>0&&state==='player'&&!anim){
+      ctx.globalAlpha=.4;glyph(1,f.fc,f.u,f.v,f.nw,1,'#000');ctx.globalAlpha=1;
+    }else if(hoverSt===st&&mode==='PLACE'&&placeOK()&&!anim){
       ctx.globalAlpha=.4;glyph(1,f.fc,f.u,f.v,f.nw,1,'#000');ctx.globalAlpha=1;
     }
     hits.push({poly:sp,c:f.c,st,nw:rnd(f.nw)});
@@ -1210,8 +1330,9 @@ function blocksOpp(r,who){
 }
 function rotOK(who){return ROTS.some(r=>blocksOpp(r,who))}
 function playerMarkOK(){return markLeft>0}
-function playerRotOK(){return rotOK(1)}
-function playerHasAction(){return playerMarkOK()||playerRotOK()}
+function playerRotOK(){return !rotLockTurn&&rotOK(1)}
+function placeOK(){return state==='player'&&!anim&&!rotatedThisTurn&&!placedThisTurn&&playerPool>=PLACE_COST&&boardNow().some(x=>x===0)}
+function playerHasAction(){return playerMarkOK()||playerRotOK()||placeOK()}
 function setUI(){
   syncMarks();
   const mine=state==='player';
@@ -1227,9 +1348,14 @@ function setUI(){
   const can=state==='player';
   const canMark=can&&markLeft>0;
   const canRot=can&&playerRotOK();
+  const canPlace=can&&placeOK();
   // auto-switch mode when current choice is exhausted
   if(can&&mode==='MARK'&&!canMark&&canRot)mode='ROTATE';
   if(can&&mode==='ROTATE'&&!canRot&&canMark)mode='MARK';
+  if(can&&mode==='PLACE'&&!canPlace)mode=canMark?'MARK':(canRot?'ROTATE':'MARK');
+  if(can&&mode!=='PLACE'&&!canMark&&!canRot&&canPlace)mode='PLACE';
+  $('mPlace').disabled=!canPlace;
+  $('mPlace').classList.toggle('on',mode==='PLACE'&&canPlace);
   $('mMark').disabled=!canMark;
   $('mRot').disabled=!canRot;
   $('mMark').classList.toggle('on',mode==='MARK'&&canMark);
@@ -1237,7 +1363,7 @@ function setUI(){
   // END TURN: after rotate, or when no marks left (must rotate/end)
   const endBtn=$('mEnd');
   if(endBtn){
-    const showEnd=can&&(rotatedThisTurn||!playerHasAction());
+    const showEnd=can&&(rotatedThisTurn||placedThisTurn||markedThisTurn||!playerHasAction());
     endBtn.classList.toggle('hidden',!showEnd);
     endBtn.disabled=!showEnd;
   }
@@ -1245,8 +1371,10 @@ function setUI(){
     $('hint').textContent='';
   }else if(!playerHasAction()){
     $('hint').textContent='No moves left. End turn.';
+  }else if(mode==='PLACE'&&canPlace){
+    $('hint').textContent='Tap an empty square to place a stone (costs '+PLACE_COST+' rotation budget).';
   }else if(mode==='MARK'&&canMark){
-    $('hint').textContent='Convert a CPU mark.';
+    $('hint').textContent='Convert a CPU mark (uses one stored mark).';
   }else if(mode==='ROTATE'&&canRot){
     $('hint').textContent=rotatedThisTurn?'Rotate more, or end turn.':'Drag a face to rotate.';
   }else if(markLeft<=0){
@@ -1260,10 +1388,13 @@ function setUI(){
     el.classList.toggle('low',n<=lowAt);
   };
   const rt=$('roundTop');if(rt)rt.textContent='ROUND '+round;
-  setStat('pRound','LINE',lineCount(1),-1);
-  setStat('cRound','LINE',lineCount(2),-1);
-  setStat('pMarks','MARK',markLeft,0);
-  setStat('cMarks','MARK',cpuMarkLeft,0);
+  // 選択パネルのMARK横: 今使えるMARKの回数(単位つき)
+  const mcost=$('mMark')&&$('mMark').querySelector('.cost');
+  if(mcost)mcost.textContent=markLeft+(markLeft===1?' use':' uses');
+  // 駒の数: YOU / CPUそれぞれ、盤面上の自分の駒数
+  const pieces=boardNow().reduce((a,x)=>{if(x===1)a[0]++;else if(x===2)a[1]++;return a},[0,0]);
+  setStat('pMarks','PIECE',pieces[0],2);
+  setStat('cMarks','PIECE',pieces[1],2);
   setStat('pRots','ROTATE',rotLeft,5);
   setStat('cRots','ROTATE',cpuRotLeft,5);
   const undoBtn=$('undo');
@@ -1276,10 +1407,10 @@ function lineStateForCpu(){
   LINES.forEach((l,k)=>{const b=boardNow();if(l.every(i=>b[i]===1))ls[0][k]=1;if(l.every(i=>b[i]===2))ls[1][k]=1});
   return ls;
 }
-/* 勝敗: 駒が3個以下になった側は負け(ラインが作れない)。どちらかの回転予算が尽きたら終了し、駒の多い方が勝ち */
+/* 勝敗: 駒が2個以下になった側は即負け。どちらかの回転予算が尽きたら終了し、駒の多い方が勝ち */
 function gameResult(){
   const b=boardNow(),[s1,s2]=stoneCountsOf(b);
-  const lose1=s1<=3,lose2=s2<=3;
+  const lose1=s1<=2,lose2=s2<=2;
   if(lose1||lose2){
     if(lose1&&lose2)return s1>s2?'P':s2>s1?'C':'D';
     return lose1?'C':'P';
@@ -1289,9 +1420,16 @@ function gameResult(){
 }
 function finishMove(who){
   lastWho=who;
+  rotLockTurn=false;markedThisTurn=false;
+  if(who===1)oppHL=null;   // 自分の手番が終わったら、相手の手の表示を消す
+  markWindow=false;cpuMarkWindow=false;placedThisTurn=false;
   clearTurnHist();
   const b=boardNow(),o=gameResult();
   if(o){endGame(o,b);return}
+  // このターンに作ったライン(ターン開始時になく、今ある)の数だけ、次以降に使えるMARK権を累積
+  const made=formedKeys(b,who).filter(k=>!(turnStart[who]||[]).includes(k));
+  markStock[who]+=made.length;
+  turnStart[3-who]=formedKeys(b,3-who);   // 相手の手番が始まる時点のライン
   syncMarks();
   if(who===1){
     if(!humanFirst)round++;
@@ -1309,27 +1447,63 @@ function finishMove(who){
 function cpuTurn(){
   if(state!=='cpu'||playMode!=='cpu')return;
   state='busy';lastWho=1;setUI();
-  cpuStep(0);
+  cpuStep(0,false);
 }
-function cpuStep(n){
+function cpuStep(n,win,marked){
+  const o0=gameResult();
+  if(o0){endGame(o0,boardNow());return}
   const P=LEVELS[level]||LEVELS.EASY;
   const b=boardNow();
-  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random,lineStateForCpu());
-  if(a.type==='end'){setTimeout(()=>finishMove(2),200);return}
-  if(a.type==='mark'){
-    const st=stickerMap()[a.i];focusSticker(st);st.owner=2;st.mt=performance.now();SND.mark();
+  cpuMarkWindow=!!win;
+  const a=chooseIter(b,2,[0,playerPool,cpuPool],n,P,Math.random,lineStateForCpu(),!!win,markStock[2]>0&&!marked);
+  if(a.type==='end'){cpuMarkWindow=false;setTimeout(()=>finishMove(2),200);return}
+  if(a.type==='place'){
+    const before=formedKeys(boardNow(),2);
+    cpuPool=Math.max(0,cpuPool-PLACE_COST);syncCounts();
+    const st=stickerMap()[a.i];focusSticker(st);st.owner=2;st.mt=performance.now();SND.ui();setOppHLSticker(st);
+    const formed=formedKeys(boardNow(),2).some(k=>!before.includes(k));
+    focusLine(newLineOf(before,2));
     setUI();
     setTimeout(()=>finishMove(2),420);
+  }else if(a.type==='mark'){
+    markStock[2]--;markUsed[2]++;
+    cpuMarkWindow=false;
+    const mb=formedKeys(boardNow(),2);
+    const st=stickerMap()[a.i];focusSticker(st);st.owner=2;st.mt=performance.now();SND.mark();setOppHLMark(st);
+    focusLine(newLineOf(mb,2));
+    setUI();
+    setTimeout(()=>cpuStep(n+1,false,true),420);   // MARKの後も同じターンで続けられる
   }else{
     cpuPool=Math.max(0,cpuPool-ROT_COST);syncCounts();
-    const r=ROTS[a.r];focusLayer(r.axis,r.layer);
+    const r=ROTS[a.r];focusLayer(r.axis,r.layer);setOppHLLayer(r.axis,r.layer);
+    const before=formedKeys(boardNow(),2);
     startRot(r.axis,r.layer,r.dir,()=>setTimeout(()=>{
-      finishMove(2);
+      const formed=formedKeys(boardNow(),2).some(k=>!before.includes(k));
+      if(formed)focusLine(newLineOf(before,2));
+      cpuStep(n+1,formed,marked);   // 揃ったら回転はできない(MARKか終了のみ)。揃わなければ続けて考える
     },120));
   }
 }
+/* ステッカーが盤面のどのマス(0..53)か */
+function slotOfSticker(st){const map=stickerMap();for(let i=0;i<NCELL;i++)if(map[i]===st)return i;return -1}
+/* 配置: 空きマスに自分の駒を置く。揃えば同じターンでMARKか終了を選べる。揃わなければターン終了 */
+function doPlayerPlace(st){
+  if(!placeOK()||st.owner!==0)return;
+  clearTurnHist();
+  state='busy';lastWho=2;placedThisTurn=true;
+  playerPool-=PLACE_COST;syncCounts();
+  const before=formedKeys(boardNow(),1);
+  const i=slotOfSticker(st);
+  st.owner=1;st.mt=performance.now();SND.ui();
+  if(playMode==='pvp')netSend({type:'place',i});
+  focusLine(findNewLine(before));
+  setUI();
+  setTimeout(()=>{if(playMode==='pvp')netSend({type:'end'});finishMove(1)},300);
+}
 function doPlayerMark(st){
   if(markLeft<=0||st.owner!==2)return;
+  markStock[1]--;markUsed[1]++;   // 累積したMARK権を1つ使う
+  markWindow=false;
   clearTurnHist();
   state='busy';lastWho=2;
   const before=formedKeys(boardNow(),1);
@@ -1338,27 +1512,36 @@ function doPlayerMark(st){
   for(let i=0;i<NCELL;i++)if(map[i]===st){slot=i;break}
   st.owner=1;st.mt=performance.now();SND.mark();setUI();focusLine(findNewLine(before));
   if(playMode==='pvp')netSend({type:'mark',i:slot});
-  setTimeout(()=>finishMove(1),400);
+  markedThisTurn=true;   // 1ターン1回。ただし、この後も回転やターン終了はできる
+  setTimeout(()=>{
+    if(state!=='busy')return;
+    state='player';setUI();
+    if(!playerHasAction())endPlayerTurn(true);
+  },400);
 }
 function doPlayerRot(r){
-  if(!blocksOpp(r,1))return;   // 回転予算が残っていない時は不可
+  if(!blocksOpp(r,1)||rotLockTurn)return;   // 回転予算がない、またはこのターンはもう回転できない
   pushTurnHist(r);
   state='busy';lastWho=2;setUI();
   playerPool-=ROT_COST;syncCounts();
   rotatedThisTurn=true;
+  markWindow=false;            // 回転すると、揃った直後のMARK権は閉じる
   if(playMode==='pvp')netSend({type:'rot',axis:r.axis,layer:r.layer,dir:r.dir});
   const before=formedKeys(boardNow(),1);
   startRot(r.axis,r.layer,r.dir,()=>{
     const b=boardNow(),o=gameResult();
     if(o){endGame(o,b);return}
-    focusLine(findNewLine(before));
+    const nl=findNewLine(before);
+    rotLockTurn=!!nl;          // 回転でラインが揃ったら、このターンの回転は終わり
+    markWindow=false;          // 揃った直後のMARKは廃止(累積分のみ)
+    focusLine(nl);
     state='player';
     setUI();
   });
 }
 function endPlayerTurn(force){
   if(state!=='player')return;
-  if(!force&&!rotatedThisTurn&&playerHasAction())return;
+  if(!force&&!rotatedThisTurn&&!placedThisTurn&&!markedThisTurn&&playerHasAction())return;
   clearTurnHist();
   state='busy';lastWho=2;setUI();
   if(playMode==='pvp')netSend({type:'end'});
@@ -1387,7 +1570,7 @@ function endGame(o,b){
 
 function assignSeats(){
   humanFirst=Math.random()<0.5;
-  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;
+  playerPool=POOL_MAX;cpuPool=POOL_MAX;syncCounts();markLeft=0;cpuMarkLeft=0;markWindow=false;cpuMarkWindow=false;placedThisTurn=false;markStock=[0,0,0];markUsed=[0,0,0];turnStart=[null,[],[]];markedThisTurn=false;rotLockTurn=false;
 }
 function beginPlay(){
   $('deal').classList.add('hidden');$('deal').classList.remove('show');
@@ -1486,8 +1669,8 @@ cv.addEventListener('pointerdown',e=>{
 cv.addEventListener('pointermove',e=>{
   if(!down){
     const h=hitTest(e.clientX,e.clientY);
-    hoverSt=(h&&h.st.owner===2&&markLeft>0&&!rotatedThisTurn)?h.st:null;
-    cv.style.cursor=!canAct()?'default':(h?(mode==='MARK'&&markLeft>0?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
+    hoverSt=(h&&((h.st.owner===2&&markLeft>0)||(h.st.owner===0&&mode==='PLACE'&&placeOK())))?h.st:null;
+    cv.style.cursor=!canAct()?'default':(h?(((mode==='MARK'&&markLeft>0)||(mode==='PLACE'&&placeOK()))?(hoverSt?'pointer':'default'):(mode==='ROTATE'&&rotLeft>0?'grab':'default')):'default');
     return;
   }
   if(!down.mode){
@@ -1505,7 +1688,12 @@ cv.addEventListener('pointermove',e=>{
   }
 });
 cv.addEventListener('pointerup',e=>{
-  if(down&&!down.mode&&mode==='MARK'&&markLeft>0&&!rotatedThisTurn&&canAct()){
+  if(down&&!down.mode&&mode==='PLACE'&&canAct()){
+    const h=hitTest(e.clientX,e.clientY);
+    if(h&&h.st.owner===0)doPlayerPlace(h.st);
+    down=null;return;
+  }
+  if(down&&!down.mode&&mode==='MARK'&&markLeft>0&&canAct()){
     const h=hitTest(e.clientX,e.clientY);
     if(h&&h.st.owner===2)doPlayerMark(h.st);
   }
@@ -1561,7 +1749,8 @@ $('btnOnline').onclick=()=>{
 };
 $('btnOnlineStart').onclick=()=>{ensureAudio();SND.ui();startOnline()};
 $('netCancel').onclick=()=>{netDestroy();setNetWait(false);$('titleStatus').textContent=''};
-$('mMark').onclick=()=>{if(state!=='player'||markLeft<=0||rotatedThisTurn)return;mode='MARK';SND.ui();setUI()};
+$('mPlace').onclick=()=>{if(!placeOK())return;mode='PLACE';SND.ui();setUI()};
+$('mMark').onclick=()=>{if(state!=='player'||markLeft<=0)return;mode='MARK';SND.ui();setUI()};
 $('mRot').onclick=()=>{if(state!=='player'||rotLeft<=0)return;mode='ROTATE';SND.ui();setUI()};
 $('mEnd').onclick=()=>{if(state!=='player')return;SND.ui();endPlayerTurn()};
 $('undo').onclick=()=>doUndo();
@@ -1575,7 +1764,8 @@ $('restart').onclick=()=>{
 $('snd').onclick=()=>{soundOn=!soundOn;$('snd').textContent=soundOn?'SOUND ON':'SOUND OFF';SND.ui()};
 addEventListener('keydown',e=>{
   if(state!=='player')return;
-  if((e.key==='m'||e.key==='M')&&markLeft>0&&!rotatedThisTurn){mode='MARK';SND.ui();setUI()}
+  if((e.key==='p'||e.key==='P')&&placeOK()){mode='PLACE';SND.ui();setUI()}
+  if((e.key==='m'||e.key==='M')&&markLeft>0){mode='MARK';SND.ui();setUI()}
   if((e.key==='r'||e.key==='R')&&rotLeft>0){mode='ROTATE';SND.ui();setUI()}
 });
 
